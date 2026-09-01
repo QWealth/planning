@@ -1,0 +1,187 @@
+/**
+ * The frame both pages sit in: masthead, navigation, and the authorisation check.
+ *
+ * WHY IDENTITY LIVES HERE AND NOT IN EACH PAGE
+ *
+ * /api/me answers "what does the API think of this token", which is a different
+ * question from "is this user signed in" - the Cognito pool is shared with the
+ * marketing compliance tool and API Gateway's authorizer accepts any token the pool
+ * ever issued, so a perfectly valid sign-in can still be refused by this API.
+ * Hoisting the call means it happens once per session rather than once per page, and
+ * a refused user gets one specific explanation instead of two pages of empty state.
+ *
+ * The refusal renders INSTEAD of the navigation, not beside it. Offering a Team tab
+ * to somebody the API will 403 is an invitation to conclude the tool is broken.
+ *
+ * The same answer is handed down through the router's outlet context, because /api/me
+ * also carries `is_admin` and the Team page needs it to decide which controls to draw.
+ * Context rather than a prop because the pages are rendered by the router, not by this
+ * component, so there is nowhere to put a prop; and one call rather than one per page
+ * because a second /api/me would be a second chance to disagree with the first.
+ */
+
+import { useCallback, useEffect, useState } from 'react';
+import { NavLink, Outlet, useOutletContext } from 'react-router-dom';
+import styled from 'styled-components';
+
+import { describeError, getIdentity } from '../services/api';
+import { palette, radius } from '../styles/theme';
+import { ErrorText, Panel, SecondaryButton } from '../styles/ui';
+import type { Identity } from '../types';
+import type { AuthState } from './LoginGate';
+
+const Page = styled.div`
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 20px 24px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+`;
+
+const Masthead = styled.header`
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+`;
+
+const Title = styled.h1`
+  font-size: 26px;
+  color: ${palette.deepMagenta};
+  margin: 0;
+`;
+
+const Spacer = styled.div`
+  flex: 1;
+`;
+
+const Status = styled.p`
+  margin: 0;
+  color: ${palette.inkSoft};
+`;
+
+const Nav = styled.nav`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  background: rgba(224, 33, 138, 0.07);
+  border-radius: ${radius.pill};
+`;
+
+/*
+  A real link, not a button that calls navigate(). Middle-click, ctrl-click and
+  "copy link address" all work for free, and the address bar stays honest - which
+  matters here because the whole point of adding a router was that /team is a place
+  somebody can be sent to.
+*/
+const Tab = styled(NavLink)`
+  display: inline-block;
+  padding: 6px 16px;
+  border-radius: ${radius.pill};
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  color: ${palette.inkSoft};
+  transition: background 0.15s ease, color 0.15s ease;
+
+  &:hover {
+    color: ${palette.deepMagenta};
+  }
+
+  &.active {
+    background: ${palette.hotPink};
+    color: #ffffff;
+  }
+`;
+
+const Denied = styled(Panel)`
+  max-width: 620px;
+  margin: 40px auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+`;
+
+export default function AppShell({ auth }: { auth: AuthState }) {
+  const [identity, setIdentity] = useState<Identity | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setIdentity(await getIdentity());
+    } catch (err) {
+      setError(describeError(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (identity && !identity.authorised) {
+    return (
+      <Denied>
+        <h2>Not authorised for the planning roadmap</h2>
+        <p>
+          You are signed in as <strong>{identity.email ?? 'an unknown account'}</strong>, but the
+          API requires membership of the <strong>{identity.required_group}</strong> group and this
+          account is {identity.groups.length ? `in ${identity.groups.join(', ')}` : 'in no groups'}.
+        </p>
+        <p>
+          The sign-in pool is shared with the marketing compliance tool, so a working password does
+          not by itself grant access here. Ask an administrator to add you to the group.
+        </p>
+        {auth.signOut ? (
+          <div>
+            <SecondaryButton type="button" onClick={auth.signOut}>
+              Sign out
+            </SecondaryButton>
+          </div>
+        ) : null}
+      </Denied>
+    );
+  }
+
+  return (
+    <Page>
+      <Masthead>
+        <Title>Planning Roadmap</Title>
+        <Nav>
+          {/* `end` so that "/" does not stay highlighted while /team is open - NavLink
+              matches by prefix otherwise and both tabs light up at once. */}
+          <Tab to="/" end>
+            Roadmap
+          </Tab>
+          <Tab to="/team">Team</Tab>
+        </Nav>
+        <Spacer />
+        {identity?.email ? <Status>{identity.email}</Status> : null}
+        {auth.signOut ? (
+          <SecondaryButton type="button" onClick={auth.signOut}>
+            Sign out
+          </SecondaryButton>
+        ) : null}
+      </Masthead>
+
+      {error ? <ErrorText role="alert">{error}</ErrorText> : null}
+
+      {/* Null until /api/me answers. Pages must treat that as "not an admin yet"
+          rather than blocking on it - the roadmap is readable by everybody, so
+          waiting for an authorisation answer to draw it would be a spinner for no
+          reason. See useIdentity below. */}
+      <Outlet context={identity} />
+    </Page>
+  );
+}
+
+/**
+ * The identity, for a page rendered inside this shell.
+ *
+ * Typed here rather than at each call site so that `useOutletContext<something-else>()`
+ * cannot quietly be written somewhere and typecheck.
+ */
+export function useIdentity(): Identity | null {
+  return useOutletContext<Identity | null>();
+}

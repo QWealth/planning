@@ -1,0 +1,16 @@
+# NOT 2.116.0, which is what marketing_compliance_review pins.
+#
+# That version ships broken cross-region references: any stack with
+# cross_region_references=True fails at synth with
+#
+#   Cannot find module '../../dist/core/cross-region-ssm-reader-provider.generated'
+#
+# because the packaged module is missing from the wheel. This project needs the
+# feature - the ACM certificate must live in us-east-1 for CloudFront while
+# everything else is ca-central-1 - so the version had to move.
+#
+# Also NOT 2.254.0 through 2.256.0: aws-cdk#37949, npm ci fails on an invalid lock
+# file. That one only bites npm-based apps rather than this Python one, but there is
+# no reason to sit inside a range AWS is actively warning about.
+aws-cdk-lib==2.253.1
+constructs>=10.0.0,<11.0.0

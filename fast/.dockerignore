@@ -1,0 +1,18 @@
+# Keep the build context to requirements.txt + app/. Everything below either does
+# not belong in a Lambda image or would change the asset hash on every local run and
+# force a pointless rebuild-and-push.
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+tests/
+demo.py
+run.sh
+requirements-dev.txt
+
+# Local data. roadmap.json is a point-in-time dump of the workbook and people.json
+# holds real addresses - neither has any business inside a container image.
+roadmap.json
+people.json
+
+.DS_Store

@@ -1,0 +1,102 @@
+"""The three tables the roadmap API reads and writes.
+
+Key schemas here must match app/db/models.py and app/config.py exactly. They are
+repeated in demo.py's create_tables() as well, which is the one duplication worth
+having: the demo has to build the same tables in moto without importing CDK.
+"""
+
+import aws_cdk as cdk
+from aws_cdk import aws_dynamodb as dynamodb
+from constructs import Construct
+
+
+class DynamoDBStack(cdk.Stack):
+    """Projects+phases, people, and the audit log."""
+
+    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+        super().__init__(scope, construct_id, **kwargs)
+
+        # Projects and their phases, single-table.
+        #
+        # sk is "#PROJECT" for the project row and "PHASE#<phase_id>" for each phase.
+        # "#" (0x23) sorts before "P" (0x50), so a single Query on project_id returns
+        # the project first and then its phases in one round trip - which is exactly
+        # the shape the roadmap screen needs. Two tables would turn drawing nine lanes
+        # into a fan-out of nine queries plus nine more.
+        self.projects_table = dynamodb.Table(
+            self,
+            "ProjectsTable",
+            partition_key=dynamodb.Attribute(
+                name="project_id", type=dynamodb.AttributeType.STRING
+            ),
+            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            # RETAIN, not DESTROY. This table is the successor to a workbook that
+            # exists in exactly one copy on one laptop; a `cdk destroy` that silently
+            # took the roadmap with it would recreate the original problem in a more
+            # expensive form. The orphaned table has to be deleted by hand, which is
+            # the point.
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+            table_name="planning-roadmap-projects",
+        )
+
+        # The roster. Partitioned on email because that is what a Cognito token
+        # carries, so "who is the logged-in user" is a GetItem and never a Scan.
+        # Addresses are lowercased at the schema layer - DynamoDB keys are
+        # case-sensitive and Cognito is not. See schemas/people.py.
+        self.people_table = dynamodb.Table(
+            self,
+            "PeopleTable",
+            partition_key=dynamodb.Attribute(name="email", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+            table_name="planning-roadmap-people",
+        )
+
+        # Audit log, partitioned on the thing that changed.
+        #
+        # Deliberately NOT the marketing tool's shape, and its own config.py records
+        # why: that table is partitioned on `timestamp` alone, so every item lands in
+        # a partition of its own and there is no key to query by. "What happened to
+        # this rule" is a full table Scan there, and the scan gets slower and dearer
+        # every week forever.
+        #
+        # The first question anyone asks of a roadmap is "who moved this date", which
+        # is the history of one entity, so entity_id is the partition key and the
+        # answer is one Query against one partition - the same cost in year three as
+        # in week one. The GSI answers the second question, "what changed lately",
+        # across all entities of a kind.
+        #
+        # No TTL attribute. The marketing audit table expires its rows; this one must
+        # not, because the reason a date slipped is worth more two years later than
+        # two weeks later, and it is a few hundred bytes a change.
+        self.audit_table = dynamodb.Table(
+            self,
+            "AuditTable",
+            partition_key=dynamodb.Attribute(
+                name="entity_id", type=dynamodb.AttributeType.STRING
+            ),
+            sort_key=dynamodb.Attribute(name="timestamp", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+            table_name="planning-roadmap-audit",
+        )
+
+        # entity is "project" / "phase" / "person" / "assignment" - see
+        # AuditLogModel. Name must match config.AUDIT_BY_ENTITY_INDEX.
+        self.audit_table.add_global_secondary_index(
+            index_name="entity-timestamp-index",
+            partition_key=dynamodb.Attribute(name="entity", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="timestamp", type=dynamodb.AttributeType.STRING),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+
+        for name, table in (
+            ("ProjectsTableName", self.projects_table),
+            ("PeopleTableName", self.people_table),
+            ("AuditTableName", self.audit_table),
+        ):
+            cdk.CfnOutput(self, name, value=table.table_name)

@@ -1,0 +1,10 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+pydantic==2.10.0
+# Pydantic's EmailStr is a soft dependency: without this installed, importing a
+# model that uses it raises at import time rather than at validation time, so the
+# whole app fails to start. Pinned explicitly rather than relying on
+# pydantic[email], which would not show up in this file at all.
+email-validator==2.2.0
+boto3==1.34.0
+mangum==0.17.0

@@ -1,0 +1,141 @@
+"""Project and phase storage: key layout, reserved words, validation."""
+
+import pytest
+
+from app.db.models import PHASE_SK_PREFIX, PROJECT_SK
+from app.db.queries import projects as q
+
+
+def test_project_row_sorts_before_its_phases(aws):
+    """
+    "#PROJECT" is punctuation-first so it is always items[0].
+
+    With the obvious "PROJECT" the phases would sort ahead of it ("PHASE#" <
+    "PROJECT"), and get_project's scan for the project row would still work while any
+    caller reasonably assuming items[0] was the project would be wrong - but only
+    once a project had phases, so never in a small test.
+    """
+    assert PROJECT_SK < PHASE_SK_PREFIX
+
+
+def test_create_and_read_back_with_phases(aws):
+    created = q.create_project(
+        name="QWAPP",
+        lane_order=0,
+        dri_email="joe@qwealth.com",
+        phases=[
+            {"name": "Planning", "phase_order": 0},
+            {"name": "Wireframes", "phase_order": 1},
+            {"name": "Maintenance", "phase_order": 9, "structural": True},
+        ],
+    )
+
+    fetched = q.get_project(created["project_id"])
+
+    assert fetched["name"] == "QWAPP"
+    assert fetched["dri_email"] == "joe@qwealth.com"
+    assert fetched["support_email"] is None
+    assert [p["name"] for p in fetched["phases"]] == ["Planning", "Wireframes", "Maintenance"]
+    assert fetched["phases"][2]["structural"] is True
+
+
+def test_reserved_words_survive_an_update(aws):
+    """
+    "name", "end" and "active" are all DynamoDB reserved words.
+
+    Every attribute goes through a #name alias precisely so that this is not a
+    special case. Without the aliases this raises ValidationException, and it would
+    do so on the single most common edit in the app.
+    """
+    project = q.create_project(name="D2", phases=[{"name": "Testing"}])
+    phase_id = project["phases"][0]["phase_id"]
+
+    q.update_project(project["project_id"], {"name": "D2 Rebuild", "active": False})
+    updated = q.update_phase(project["project_id"], phase_id, {"end": "2026-06-30"})
+
+    assert q.get_project(project["project_id"])["name"] == "D2 Rebuild"
+    assert updated["end"] == "2026-06-30"
+
+
+def test_update_rejects_unknown_fields(aws):
+    """The allowlist stops a raw request body overwriting project_id or created_at."""
+    project = q.create_project(name="Qfeed")
+
+    with pytest.raises(q.ValidationError):
+        q.update_project(project["project_id"], {"project_id": "hijacked"})
+
+
+def test_update_refuses_to_resurrect_a_deleted_phase(aws):
+    """
+    attribute_exists guards against recreating a row as a stub.
+
+    Without the condition, patching a phase another user has just deleted writes a
+    brand new item holding only the patched field - a phase with no name, which the
+    roadmap then draws as a blank band nobody can account for.
+    """
+    project = q.create_project(name="Qfeed", phases=[{"name": "Coding"}])
+    phase_id = project["phases"][0]["phase_id"]
+    q.delete_phase(project["project_id"], phase_id)
+
+    assert q.update_phase(project["project_id"], phase_id, {"name": "Coding"}) is None
+    assert q.get_phase(project["project_id"], phase_id) is None
+
+
+def test_end_before_start_is_refused_against_the_merged_row(aws):
+    """
+    The check is on the result, not the request.
+
+    A PATCH carrying only `end` has no `start` to compare against, so validating the
+    request alone would let it move the end before a start already in the table.
+    """
+    project = q.create_project(
+        name="DocuTelligence",
+        phases=[{"name": "Architecting", "start": "2026-05-01", "end": "2026-07-01"}],
+    )
+    phase_id = project["phases"][0]["phase_id"]
+
+    with pytest.raises(q.ValidationError, match="before start"):
+        q.update_phase(project["project_id"], phase_id, {"end": "2026-02-01"})
+
+    # The stored value is untouched by the rejected write.
+    assert q.get_phase(project["project_id"], phase_id)["end"] == "2026-07-01"
+
+
+def test_structural_phase_cannot_take_dates(aws):
+    """Maintenance is an ongoing band, not scheduled work, so it draws no bar."""
+    project = q.create_project(
+        name="Net Worth", phases=[{"name": "Maintenance", "structural": True}]
+    )
+    phase_id = project["phases"][0]["phase_id"]
+
+    with pytest.raises(q.ValidationError, match="structural"):
+        q.update_phase(project["project_id"], phase_id, {"start": "2026-01-01"})
+
+
+def test_delete_project_is_soft_and_hides_it(aws):
+    project = q.create_project(name="Retired Thing")
+    assert q.delete_project(project["project_id"]) is True
+
+    assert project["project_id"] not in [p["project_id"] for p in q.list_projects()]
+    assert project["project_id"] in [
+        p["project_id"] for p in q.list_projects(include_inactive=True)
+    ]
+
+
+def test_list_projects_is_in_lane_order(aws):
+    q.create_project(name="Third", lane_order=2)
+    q.create_project(name="First", lane_order=0)
+    q.create_project(name="Second", lane_order=1)
+
+    assert [p["name"] for p in q.list_projects()] == ["First", "Second", "Third"]
+
+
+def test_missing_project_is_none_not_an_empty_shell(aws):
+    """
+    A phantom project id returns None.
+
+    The Query returns zero items rather than raising, so a careless implementation
+    would build a project dict full of Nones and the UI would render an untitled
+    empty lane instead of a 404.
+    """
+    assert q.get_project("does-not-exist") is None

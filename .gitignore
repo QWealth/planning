@@ -1,0 +1,32 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Extractor output. Deliberately not committed: it is a point-in-time dump of the
+# workbook, and a stale copy in the repo would eventually be mistaken for the
+# source of truth by someone reading it after the migration.
+roadmap.json
+
+# The name -> email mapping the seed loader needs. Real addresses; keep it local.
+people.json
+
+# Node / frontend (slice 4)
+node_modules/
+dist/
+.env.local
+
+# `tsc -b` incremental state. Machine-specific absolute paths; conflicts on every
+# merge and tells a checkout nothing.
+tsconfig.tsbuildinfo
+
+# CDK (slice 5)
+cdk.out/
+.cdk.staging/
+
+# macOS
+.DS_Store
+
+# Excel lock files, in case the workbook is ever opened from inside the repo
+~$*.xlsx

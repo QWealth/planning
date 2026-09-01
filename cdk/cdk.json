@@ -1,0 +1,62 @@
+{
+  "_app_comment": [
+    "The venv interpreter by path, not bare `python3`. On a pyenv-managed machine",
+    "`python3` resolves to a shim that is very often not this venv, so synth fails",
+    "with ModuleNotFoundError: aws_cdk even though pip install just succeeded here.",
+    "Same reasoning as the PYTHON resolution in fast/run.sh."
+  ],
+  "app": "venv/bin/python bin/app.py",
+  "context": {
+    "env": "dev",
+    "account": "778983355679",
+    "region": "ca-central-1",
+    "user_pool_id": "ca-central-1_P8orSDvVO",
+    "require_auth": true,
+
+    "_group_comment": [
+      "enforce_group is OFF by decision: anybody with a Cognito account in the pool",
+      "may use the roadmap. That pool is SHARED with the marketing compliance tool,",
+      "so this admits compliance-tool accounts too - which is the whole of what",
+      "allow_whole_pool is acknowledging. It was weighed and accepted: the pool holds",
+      "five people, all @qwealth.com, and the alternative was a group membership to",
+      "chase every time somebody new needed a date changed.",
+      "",
+      "required_group is still named because /api/me reports it and the Cognito group",
+      "still exists; with enforcement off it is documentation. Setting enforce_group",
+      "back to true is the only change needed to make it bite again - nothing else",
+      "here or in the API depends on it being off.",
+      "",
+      "admin_group is a DIFFERENT question and IS still enforced: it gates acting on",
+      "somebody other than yourself on the roster. 'admin' is the pool's existing",
+      "group, so a compliance-tool admin is an admin here too. Also deliberate.",
+      "Roadmap editing - projects, phases, milestones - stays open to everybody."
+    ],
+    "enforce_group": false,
+    "allow_whole_pool": true,
+    "required_group": "planning",
+    "admin_group": "admin",
+
+    "_dns_comment": [
+      "planning.qconnect.qwnext.com nests inside an ALREADY-DELEGATED zone, which",
+      "is the only reason this is safe. `dig +short NS qconnect.qwnext.com",
+      "@8.8.8.8` returns four Route53 nameservers. Do NOT change domain_name to a",
+      "first-level subdomain of qwnext.com: that apex is served by Cloudflare, the",
+      "Route53 zone named qwnext.com is vestigial, and a new name there needs a",
+      "Cloudflare NS record that AWS credentials cannot create. intake.qwnext.com",
+      "and onboarding.qwnext.com are the cautionary tale - zones that resolve",
+      "nowhere and six ACM certs dead of VALIDATION_TIMED_OUT.",
+      "Set domain_name to null to deploy the API alone with no cert and no record."
+    ],
+    "domain_name": "planning.qconnect.qwnext.com",
+    "hosted_zone_id": "Z05305531FKJD83WOWYAD",
+    "zone_name": "qconnect.qwnext.com",
+
+    "_cors_comment": [
+      "The browser reaches /api/* on the SAME origin, through CloudFront, so normal",
+      "use triggers no preflight and needs nothing here. The custom domain is listed",
+      "anyway for the case that does cross origins: a Vite dev server on :5173",
+      "calling the deployed API directly."
+    ],
+    "cors_origins": "https://planning.qconnect.qwnext.com,http://localhost:5173,http://localhost:3000"
+  }
+}

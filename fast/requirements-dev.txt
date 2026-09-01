@@ -1,0 +1,14 @@
+-r requirements.txt
+pytest==8.3.3
+httpx==0.27.2
+# DynamoDB in-process. The test suite creates real tables against moto's mock, so
+# key schemas, reserved-word aliases and conditional expressions are exercised for
+# real - a hand-rolled dict stub would accept the "name"/"end" reserved words that
+# DynamoDB rejects, which is one of the two bugs this suite exists to catch.
+moto[dynamodb]==5.0.16
+# SRP client for get_token.py. A dev dependency on purpose: it is how a human gets
+# an ID token while there is no login screen, and it must never reach the Lambda
+# image - nothing server-side authenticates anyone, the API Gateway authorizer does.
+# The alternative to this package was enabling USER_PASSWORD_AUTH on the app client,
+# which would weaken the deployed configuration to save a dev dependency.
+pycognito==2024.5.1

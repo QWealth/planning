@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<!--
+  Placeholder, served at planning.qconnect.qwnext.com until slice 4 exists.
+
+  It is here because the alternative is worse: an empty S3 origin makes CloudFront
+  answer AccessDenied XML, which looks like a broken deployment rather than an
+  unfinished one. This page says which it is.
+
+  Deliberately static and deliberately honest - it renders nothing about the
+  roadmap itself. Every number on this screen comes from a live call to /health,
+  which is the one route that needs no token. Anything else would be a mock, and a
+  chart that looks like data and is not is the exact failure this project exists to
+  end.
+
+  cdk/lib/frontend_stack.py uploads this only when ../dist is absent. The moment the
+  React build exists, that wins and this file stops shipping.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Planning Roadmap — API only</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1a1a1a;
+        --muted: #6b6b6b;
+        --line: #d8d8d8;
+        --bg: #fbfbfa;
+        --ok: #1a7f37;
+        --pending: #9a6700;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e6e6e6;
+          --muted: #9b9b9b;
+          --line: #333;
+          --bg: #17171a;
+          --ok: #3fb950;
+          --pending: #d29922;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 3rem 1.5rem;
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.6 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+      }
+      main { max-width: 40rem; margin: 0 auto; }
+      h1 { font-size: 1.35rem; margin: 0 0 0.25rem; letter-spacing: -0.01em; }
+      .sub { color: var(--muted); margin: 0 0 2rem; }
+      table { border-collapse: collapse; width: 100%; margin: 0 0 2rem; }
+      th, td {
+        text-align: left;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+      th { font-weight: 600; width: 11rem; }
+      td { color: var(--muted); }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.85em;
+        word-break: break-all;
+      }
+      .ok { color: var(--ok); font-weight: 600; }
+      .pending { color: var(--pending); font-weight: 600; }
+      footer { color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Planning Roadmap</h1>
+      <p class="sub">Backend is deployed. The interface is not built yet.</p>
+
+      <table>
+        <tbody>
+          <tr>
+            <th>API</th>
+            <td id="api-status">checking&hellip;</td>
+          </tr>
+          <tr>
+            <th>Interface</th>
+            <td><span class="pending">not built</span> — slice 4</td>
+          </tr>
+          <tr>
+            <th>Data</th>
+            <td>9 projects, 54 phases, migrated from the Aug&nbsp;24 workbook</td>
+          </tr>
+          <tr>
+            <th>Access</th>
+            <td>
+              Every route except <code>/health</code> needs a Cognito ID token
+              <em>and</em> membership of the <code>planning</code> group. A browser
+              with no token gets 401 here, which is correct.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <footer>
+        This page is a placeholder and shows no roadmap data. It is replaced
+        automatically once the React build exists.
+      </footer>
+    </main>
+
+    <script>
+      // Same-origin: CloudFront routes /api/* and /health to API Gateway, so this
+      // is not a cross-origin request and needs no CORS preflight.
+      fetch("/health")
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function (body) {
+          document.getElementById("api-status").innerHTML =
+            '<span class="ok">live</span> — ' + body.service;
+        })
+        .catch(function (err) {
+          document.getElementById("api-status").textContent =
+            "unreachable (" + err + ")";
+        });
+    </script>
+  </body>
+</html>
