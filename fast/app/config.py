@@ -60,6 +60,56 @@ ENFORCE_GROUP = os.environ.get("ENFORCE_GROUP", "true").strip().lower() in {"1",
 # the whole roster to any pool member.
 ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "admin").strip()
 
+# Where this app answers, for the text of an invitation.
+#
+# Not derived from the request. An invite composed from a dev build would then tell a
+# colleague to sign in at localhost, and the whole point of the message is that it is
+# the only thing carrying the link - Cognito's own email has no URL in it at all.
+# Defaulted to the real address rather than left empty so a missing environment
+# variable produces a correct invite instead of a broken one.
+#
+# `or` rather than a get() default, because CDK sets this variable unconditionally
+# and sets it to "" when no domain is configured. An empty string is present as far
+# as os.environ is concerned, so a plain default would never fire and the invitation
+# would go out with a blank line where the link should be.
+APP_URL = (os.environ.get("APP_URL") or "https://planning.qconnect.qwnext.com").rstrip("/")
+
+# IAM principals allowed to call /api/service/*, as full role ARNs.
+#
+# This is the Aardvark Aap Slack bot and nothing else. It is a SECOND way to reach the
+# invite endpoint, alongside the admin-only human route, and it deserves the paranoia:
+# an invite writes to the Cognito pool SHARED with the marketing compliance tool.
+#
+# API Gateway has already refused anyone without execute-api:Invoke on the route
+# before Lambda is reached, so this list is the second of two locks rather than the
+# only one. It exists because IAM permissions are granted in a different repo, by a
+# different deploy, and "who may invite" should be reviewable HERE too.
+#
+# Empty by default, and empty means the service door is shut. A misconfigured
+# environment loses the Slack command; it does not open the endpoint to the account.
+SERVICE_CALLER_ARNS = [
+    arn.strip()
+    for arn in os.environ.get("SERVICE_CALLER_ARNS", "").split(",")
+    if arn.strip()
+]
+
+# Slack, for the invite picker on the Team page. See app/slack.py.
+#
+# The token itself is NOT an environment variable in the deployed app. CDK grants the
+# Lambda role read access to this secret instead, because a value in a Lambda's
+# environment is readable by anyone holding lambda:GetFunctionConfiguration - a much
+# wider group than those who can read a secret, and a bot token is a workspace-wide
+# credential.
+#
+# The secret is Aardvark Aap's, and is shared rather than copied: one Slack app, one
+# token, rotated in one place. The consequence is that a DM sent from here appears to
+# come from Aardvark, which matches its own /roadmap-invite command.
+SLACK_SECRET_NAME = os.environ.get("SLACK_SECRET_NAME", "aardvark-app/slack")
+
+# A direct token, for local development and tests only. Checked BEFORE the secret, so
+# `demo.py` and pytest never reach for AWS. Empty in every deployed environment.
+SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+
 # Logging. See the Lambda note in main.py - basicConfig alone does nothing there.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 

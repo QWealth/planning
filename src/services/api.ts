@@ -12,6 +12,7 @@ import axios, { AxiosError } from 'axios';
 
 import type {
   Identity,
+  InviteResult,
   Milestone,
   MilestoneCreate,
   MilestonePatch,
@@ -30,6 +31,7 @@ import type {
   Roadmap,
   RoleInfo,
   SkillInfo,
+  SlackDirectory,
 } from '../types';
 import { getIdToken } from './auth';
 
@@ -193,6 +195,25 @@ export async function patchPhase(
 }
 
 /**
+ * Remove a phase. A real delete, and the audit row keeps the full before-snapshot.
+ *
+ * Not soft-deleted, for the same reason milestones are not: an archived phase would
+ * still carry dates and progress, so it would keep widening the chart's span and
+ * feeding the lane's rolled-up state while being invisible on it — a lane reading
+ * "Coding · 40%" with no Coding bar anywhere on it.
+ *
+ * A lane is seeded with six standard phases on create, and the whole point of them is
+ * that they are a starting position rather than a commitment: not every project has a
+ * Wireframes stage. Deleting the ones that do not apply is the normal use of this,
+ * not the exceptional one.
+ */
+export async function deletePhase(projectId: string, phaseId: string): Promise<void> {
+  await apiClient.delete(
+    `/projects/${encodeURIComponent(projectId)}/phases/${encodeURIComponent(phaseId)}`
+  );
+}
+
+/**
  * Edit a project. Same absent/null rule as patchPhase.
  *
  * Returns ProjectSummary, NOT Project: the backend's response model here is
@@ -208,6 +229,35 @@ export async function patchProject(
     patch
   );
   return response.data;
+}
+
+/**
+ * Write a new lane order: one PATCH per project whose position actually changed.
+ *
+ * There is no bulk endpoint and this deliberately does not add one. `lane_order` has
+ * been in PROJECT_UPDATABLE since the table was designed, so reordering is already
+ * expressible as the edits it literally is - and each one earns its own audit row
+ * saying who moved that lane, which a single "reorder" call would flatten into one
+ * entry that cannot answer "who put this at the top".
+ *
+ * Issued in parallel because they touch different partition keys and cannot contend,
+ * and because a serial walk of ten lanes is ten round trips the user waits through.
+ *
+ * PARTIAL FAILURE IS REAL AND IS THE CALLER'S PROBLEM.
+ *
+ * Promise.all rejects on the first failure while the others carry on and land, so a
+ * rejection here means the stored order is some mixture of old and new. There is no
+ * honest way to roll that back - the successful PATCHes are committed, and "undo" is
+ * more writes that can themselves fail. So this makes no attempt to, and the caller
+ * must re-read the roadmap rather than keep showing its draft: the screen has to end
+ * up displaying what is stored, not what was asked for. See RoadmapPage.saveOrder.
+ */
+export async function saveLaneOrder(
+  changes: readonly { project_id: string; lane_order: number }[]
+): Promise<void> {
+  await Promise.all(
+    changes.map((change) => patchProject(change.project_id, { lane_order: change.lane_order }))
+  );
 }
 
 /**
@@ -262,8 +312,8 @@ export async function patchMilestone(
  * Remove a milestone. A real delete, unlike people and projects.
  *
  * Soft-deleting it would be worse than useless here: an inactive milestone still has
- * a date, so it would keep counting towards the gap report and the missed tally while
- * being invisible on the chart. A deadline that was set by mistake has no history
+ * a date, so it would keep counting towards the missed tally while being invisible
+ * on the chart. A deadline that was set by mistake has no history
  * worth preserving on the roadmap - the audit row keeps the full before-snapshot.
  */
 export async function deleteMilestone(projectId: string, milestoneId: string): Promise<void> {
@@ -315,6 +365,60 @@ export async function getWorkload(): Promise<PersonWorkload[]> {
  */
 export async function createPerson(body: PersonCreate): Promise<Person> {
   const response = await apiClient.post<Person>('/people', body);
+  return response.data;
+}
+
+/**
+ * Give somebody a login: create the Cognito account and put them in the planning group.
+ *
+ * The mirror image of createPerson above, and the two are deliberately separate calls
+ * rather than one. This grants ACCESS and creates no roster row; createPerson creates
+ * a ROSTER ROW and grants no access. Fusing them would mean either inviting everybody
+ * you want to schedule work for, or listing everybody who can log in as staff.
+ *
+ * Idempotent, and that matters more here than usual: the pool is shared with the
+ * marketing compliance tool, so most colleagues already have an account. Inviting one
+ * of them succeeds with `account_created: false` rather than failing with a 409.
+ *
+ * Admin only — a 403 otherwise. Cognito's own email carries the temporary password
+ * but no link and the wrong product name, so the instructions are a separate message.
+ * The API composes it (see fast/app/invites.py) and returns it as `message`.
+ *
+ * `slackUserId` is a DELIVERY ROUTE, not an identity — pass it only when the address
+ * came from the Slack picker, where we know which human it belongs to. Given one, the
+ * API DMs the message itself and answers `dm_sent: true`; without one it hands the
+ * text back for the admin to send, which is what this did before Slack.
+ */
+export async function invitePerson(
+  email: string,
+  slackUserId?: string
+): Promise<InviteResult> {
+  const response = await apiClient.post<InviteResult>('/people/invite', {
+    email,
+    // Absent, not null, when the address was typed. The API treats a blank as absent
+    // too, but sending the key only when it means something keeps the audit row and
+    // the request honest about which path the invite came in through.
+    ...(slackUserId ? { slack_user_id: slackUserId } : {}),
+  });
+  return response.data;
+}
+
+/**
+ * Everybody in the Slack workspace who could be invited, flagged with who already has
+ * a roster row.
+ *
+ * A PICKER SOURCE, NOT A ROSTER. Nothing here is on the team list and calling this
+ * creates nothing — see fast/app/routes/slack.py, which explains why keeping the two
+ * apart is load-bearing rather than tidy.
+ *
+ * NEVER REJECTS FOR SLACK BEING DOWN. The API answers 200 with `unavailable` set when
+ * it cannot reach Slack, is missing a scope, or has no secret configured, because the
+ * typed-address invite worked before Slack existed and must keep working. So the
+ * caller checks `unavailable` rather than catching — a rejection here means the
+ * request itself failed, which for an admin-only route usually means a 403.
+ */
+export async function fetchSlackPeople(): Promise<SlackDirectory> {
+  const response = await apiClient.get<SlackDirectory>('/slack/people');
   return response.data;
 }
 

@@ -5,11 +5,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from app import cognito, invites
 from app.auth import is_admin, require_admin, require_planning_group, same_person
 from app.db.models import AuditLogModel
 from app.db.queries import audit, people as q, projects as project_q
 from app.roles import catalogue as role_catalogue
 from app.schemas.people import (
+    InviteIn,
+    InviteOut,
     PersonCreate,
     PersonDeleted,
     PersonOut,
@@ -189,6 +192,41 @@ async def create_person(
         user_email=user_email,
     )
     return created
+
+
+@router.post("/invite", response_model=InviteOut, status_code=status.HTTP_201_CREATED)
+async def invite_person(
+    body: InviteIn,
+    user_email: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """
+    Give somebody a login for this app. Admin-only.
+
+    Stricter than create_person directly above, which any planning member may call for
+    themselves. The difference is what is being handed out: a roster row says who work
+    can be assigned to and grants nothing, whereas this creates an account on a pool
+    SHARED with the marketing compliance tool. An account made here is an account
+    there. That is not a decision to leave to self-service.
+
+    Deliberately not admin-only-by-obscurity: the refusal is a 403 from require_admin
+    with a reason, so a non-admin who finds the button knows to ask rather than
+    assuming the feature is broken.
+
+    Does not create the roster row. See app/cognito.py for why, and identity.py for
+    what the invited person meets on their first sign-in.
+
+    Declared before /{email} out of habit rather than necessity - there is no POST
+    /{email} for it to shadow today, but /workload's docstring records what happens
+    when a literal path loses that race, and adding one later should not be a trap.
+    """
+    try:
+        return invites.perform_invite(
+            body.email, actor=user_email, slack_user_id=body.slack_user_id
+        )
+    except cognito.InviteError as e:
+        # 502, not 500: the failure is downstream of this API, in a service it
+        # depends on. The message is already admin-readable - see cognito._explain.
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
 
 
 @router.patch("/{email}", response_model=PersonOut)

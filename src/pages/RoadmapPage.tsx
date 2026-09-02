@@ -1,9 +1,14 @@
 /**
- * The roadmap: the chart, its toolbar, and the "still to decide" side panel.
+ * The roadmap: the chart and its toolbar.
  *
  * Was the whole of App.tsx until the Team page arrived. The masthead, the sign-out
  * button and the /api/me authorisation check moved up into AppShell, because both
  * pages need them and asking the API who you are twice per session is wasteful.
+ *
+ * There were two summary chips above the toolbar - today's date, and "10 projects ·
+ * 50 phases · 2 milestones" - and both were removed. Neither was load-bearing: the
+ * date is on the chart already, as the TODAY marker on the axis, and a count of lanes
+ * is a count of the rows immediately underneath it.
  *
  * ONE THING HERE IS NOT OBVIOUS AND IS DELIBERATE.
  *
@@ -20,17 +25,12 @@ import styled from 'styled-components';
 import Legend from '../components/Legend';
 import ProjectEditor from '../components/ProjectEditor';
 import Timeline, { laneAnchorId } from '../components/chart/Timeline';
-import { describeError, getRoadmap } from '../services/api';
+import { describeError, getRoadmap, saveLaneOrder } from '../services/api';
 import { palette } from '../styles/theme';
-import {
-  Chip,
-  ErrorText,
-  Panel,
-  PrimaryButton,
-  SecondaryButton,
-} from '../styles/ui';
+import { ErrorText, Hint, Panel, PrimaryButton, SecondaryButton } from '../styles/ui';
 import type { Milestone, Phase, Project, ProjectPatch, Roadmap } from '../types';
-import { buildGrid, formatLong, todayISO } from '../utils/dates';
+import { buildGrid, todayISO } from '../utils/dates';
+import { laneOrderChanges, moveLane } from '../utils/laneOrder';
 import { milestoneDates, sortMilestones } from '../utils/milestones';
 
 const Toolbar = styled.div`
@@ -57,13 +57,6 @@ const NewProjectHead = styled.h2`
   padding-left: 30px;
 `;
 
-const Summary = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-`;
-
 export default function RoadmapPage() {
   const [roadmap, setRoadmap] = useState<Roadmap | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +64,22 @@ export default function RoadmapPage() {
 
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [addingProject, setAddingProject] = useState(false);
+
+  /**
+   * The lane order being arranged, as project ids - or null when not reordering.
+   *
+   * A DRAFT, deliberately, rather than a PATCH per click. Reordering is not one edit,
+   * it is a sequence of them converging on an arrangement, and saving each step would
+   * write - and audit - half a dozen intermediate orders nobody ever wanted to look
+   * at. It would also race: click Move up twice quickly and two overlapping PATCH
+   * pairs land in whatever sequence the network chose.
+   *
+   * Holding ids rather than projects means the draft cannot go stale against an edit
+   * made while the mode is open. A phase saved on a lane mid-rearrangement updates
+   * `roadmap`; the order is unaffected because it never held a copy of the lane.
+   */
+  const [draftOrder, setDraftOrder] = useState<readonly string[] | null>(null);
+  const [savingOrder, setSavingOrder] = useState(false);
 
   // Captured once per mount. Recomputed on every render it would be a new string
   // each time, so every memo below - including the grid - would rebuild constantly.
@@ -142,6 +151,24 @@ export default function RoadmapPage() {
           ),
         };
       });
+    },
+    [updateLane]
+  );
+
+  /**
+   * Drop a deleted phase out of its lane.
+   *
+   * No re-sort needed - removing from an ordered list leaves it ordered - but the
+   * lane's whole appearance is derived from `phases`, so this one filter also
+   * re-segments the collapsed bar, re-rolls its state and caption, and narrows the
+   * chart's span if this phase was holding an edge of it.
+   */
+  const onPhaseDeleted = useCallback(
+    (projectId: string, phaseId: string) => {
+      updateLane(projectId, (project) => ({
+        ...project,
+        phases: project.phases.filter((phase) => phase.phase_id !== phaseId),
+      }));
     },
     [updateLane]
   );
@@ -218,12 +245,85 @@ export default function RoadmapPage() {
     });
   }, []);
 
-  const projects = useMemo(() => {
+  const stored = useMemo(() => {
     const list = roadmap?.projects ?? [];
     // lane_order is the workbook's own row order, which is the order everyone
-    // already has in their head. Name is only the tiebreak.
+    // already has in their head. Name is only the tiebreak. Matches the sort in
+    // list_projects, so the chart cannot disagree with the API about the order.
     return [...list].sort((a, b) => a.lane_order - b.lane_order || a.name.localeCompare(b.name));
   }, [roadmap]);
+
+  /**
+   * What the chart draws: the draft while somebody is arranging it, otherwise stored.
+   *
+   * A project the draft has never heard of sorts to the end rather than being dropped.
+   * The toolbar makes this hard to reach - New project is disabled while reordering -
+   * but "arrived from somewhere unexpected" must not mean "vanished off the roadmap",
+   * and the end is where a new lane goes anyway. Array sort is stable, so several such
+   * lanes keep their stored order relative to each other.
+   */
+  const projects = useMemo(() => {
+    if (!draftOrder) {
+      return stored;
+    }
+    const rank = new Map(draftOrder.map((projectId, index) => [projectId, index]));
+    return [...stored].sort(
+      (a, b) =>
+        (rank.get(a.project_id) ?? Number.POSITIVE_INFINITY) -
+        (rank.get(b.project_id) ?? Number.POSITIVE_INFINITY)
+    );
+  }, [stored, draftOrder]);
+
+  /** The rows a save would actually write. Empty means Save has nothing to do. */
+  const pendingOrder = useMemo(
+    () => (draftOrder ? laneOrderChanges(draftOrder, stored) : []),
+    [draftOrder, stored]
+  );
+
+  const onMoveProject = useCallback((projectId: string, delta: -1 | 1) => {
+    setDraftOrder((current) => (current ? moveLane(current, projectId, delta) : current));
+  }, []);
+
+  const saveOrder = useCallback(async () => {
+    if (!draftOrder || pendingOrder.length === 0) {
+      setDraftOrder(null);
+      return;
+    }
+    setSavingOrder(true);
+    setError(null);
+    try {
+      await saveLaneOrder(pendingOrder);
+      // Applied to state rather than refetched. The whole roadmap - every phase and
+      // milestone - is already here, and one changed integer per lane does not justify
+      // pulling all of it back over the wire just to learn numbers we chose ourselves.
+      const written = new Map(pendingOrder.map((c) => [c.project_id, c.lane_order]));
+      setRoadmap((current) =>
+        current
+          ? {
+              ...current,
+              projects: current.projects.map((project) => {
+                const lane_order = written.get(project.project_id);
+                return lane_order === undefined ? project : { ...project, lane_order };
+              }),
+            }
+          : current
+      );
+      setDraftOrder(null);
+    } catch (err) {
+      // saveLaneOrder issues the PATCHes in parallel and rejects on the first failure
+      // while the rest carry on, so the stored order is now some mixture of old and
+      // new. Refetch rather than keep showing the draft: the screen has to end up
+      // displaying what is actually stored, however untidy that is.
+      const message = describeError(err);
+      setDraftOrder(null);
+      await load();
+      // After load, which clears the error on its way in - so the reason the save
+      // failed is set last or it would be wiped by the re-read that follows it.
+      setError(message);
+    } finally {
+      setSavingOrder(false);
+    }
+  }, [draftOrder, pendingOrder, load]);
 
   const grid = useMemo(() => {
     const dates = projects.flatMap((project) => [
@@ -244,11 +344,6 @@ export default function RoadmapPage() {
     return buildGrid(start, end, today);
   }, [projects, today]);
 
-  const milestoneTotal = useMemo(
-    () => projects.reduce((n, project) => n + project.milestones.length, 0),
-    [projects]
-  );
-
   // One past the highest lane_order loaded, which is the highest ACTIVE one - this
   // page no longer fetches archived lanes at all - so a new lane can be given the same
   // order as an archived lane nobody can see. That is deliberately tolerated rather
@@ -262,44 +357,68 @@ export default function RoadmapPage() {
   );
 
   const allExpanded = projects.length > 0 && expanded.size === projects.length;
+  const reordering = draftOrder !== null;
 
   return (
     <>
-      <Summary>
-        <Chip title={formatLong(today)}>Today {formatLong(today)}</Chip>
-        {roadmap ? (
-          <Chip>
-            {projects.length} projects ·{' '}
-            {projects.reduce((n, p) => n + p.phases.filter((ph) => !ph.structural).length, 0)}{' '}
-            phases
-            {/* Milestones are counted alongside phases, never added to them: they are
-                deadlines rather than work, and one total covering both would be a
-                number that means nothing. Suppressed entirely at zero so the header
-                does not advertise a feature nothing is using yet. */}
-            {milestoneTotal > 0 ? ` · ${milestoneTotal} milestones` : ''}
-          </Chip>
-        ) : null}
-      </Summary>
-
       <Toolbar>
-        {/* The only primary button on the screen, and first in the toolbar. Everything
-            else here changes what is shown; this is the one that adds something. */}
-        <PrimaryButton
-          type="button"
-          onClick={() => setAddingProject((open) => !open)}
-          aria-expanded={addingProject}
-        >
-          {addingProject ? 'Close' : 'New project'}
-        </PrimaryButton>
-        <SecondaryButton
-          type="button"
-          onClick={() =>
-            setExpanded(allExpanded ? new Set() : new Set(projects.map((p) => p.project_id)))
-          }
-          disabled={projects.length === 0}
-        >
-          {allExpanded ? 'Collapse all' : 'Expand all'}
-        </SecondaryButton>
+        {reordering ? (
+          <>
+            {/* Cancel first and Save second, so the destructive-to-your-work option is
+                not the one under the cursor after the last Move click. */}
+            <SecondaryButton type="button" onClick={() => setDraftOrder(null)} disabled={savingOrder}>
+              Cancel
+            </SecondaryButton>
+            <PrimaryButton
+              type="button"
+              onClick={() => void saveOrder()}
+              disabled={savingOrder || pendingOrder.length === 0}
+            >
+              {savingOrder ? 'Saving…' : 'Save order'}
+            </PrimaryButton>
+            {/* Says where the controls are, because they are in the lane label column
+                rather than up here, and a mode whose controls you have to hunt for is
+                a mode people back out of. */}
+            <Hint>
+              {pendingOrder.length === 0
+                ? 'Use the arrows beside each project name to move it up or down.'
+                : `${pendingOrder.length} lane${pendingOrder.length === 1 ? '' : 's'} will be renumbered.`}
+            </Hint>
+          </>
+        ) : (
+          <>
+            {/* The only primary button on the screen, and first in the toolbar. Everything
+                else here changes what is shown; this is the one that adds something. */}
+            <PrimaryButton
+              type="button"
+              onClick={() => setAddingProject((open) => !open)}
+              aria-expanded={addingProject}
+            >
+              {addingProject ? 'Close' : 'New project'}
+            </PrimaryButton>
+            <SecondaryButton
+              type="button"
+              onClick={() =>
+                setExpanded(allExpanded ? new Set() : new Set(projects.map((p) => p.project_id)))
+              }
+              disabled={projects.length === 0}
+            >
+              {allExpanded ? 'Collapse all' : 'Expand all'}
+            </SecondaryButton>
+            {/* Disabled rather than hidden while the New project form is open. Entering
+                the mode would have to either close that form, losing what was typed
+                into it, or leave it open above a chart whose rows are moving. Two lanes
+                is the point at which order is a question worth asking, so below that
+                the control would be a mode with nothing to do. */}
+            <SecondaryButton
+              type="button"
+              onClick={() => setDraftOrder(projects.map((p) => p.project_id))}
+              disabled={projects.length < 2 || addingProject}
+            >
+              Reorder
+            </SecondaryButton>
+          </>
+        )}
         <Spacer />
         <Legend />
       </Toolbar>
@@ -333,7 +452,9 @@ export default function RoadmapPage() {
             today={today}
             expanded={expanded}
             onToggle={toggle}
+            onMoveProject={reordering ? onMoveProject : null}
             onPhaseSaved={onPhaseSaved}
+            onPhaseDeleted={onPhaseDeleted}
             onMilestoneSaved={onMilestoneSaved}
             onMilestoneDeleted={onMilestoneDeleted}
             onProjectSaved={onProjectSaved}

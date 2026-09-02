@@ -39,6 +39,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import styled from 'styled-components';
 
 import { useIdentity } from '../components/AppShell';
+import InvitePanel from '../components/InvitePanel';
 import TeamChart, { TeamChartKey, type TeamChartRow } from '../components/chart/TeamChart';
 import PersonEditor from '../components/PersonEditor';
 import { describeError, getRoadmap, getRoles, getSkills, getWorkload } from '../services/api';
@@ -54,13 +55,13 @@ import {
   SecondaryButton,
   ToggleButton,
 } from '../styles/ui';
+import { compareSpecialisations, starGlyphs, starLabel } from '../utils/skills';
 import type {
   Person,
   PersonWorkload,
   Project,
   RoleInfo,
   SkillInfo,
-  SkillLevel,
   Unassigned,
 } from '../types';
 
@@ -180,66 +181,61 @@ const Cell = styled.div`
 /**
  * A skill, marked by how the person holds it.
  *
- * Level is carried by fill AND by a glyph AND by the words in the tooltip, so nothing
- * about "who to ask" depends on distinguishing pink from warm grey.
+ * The rating is carried by the STARS THEMSELVES, and that is why the glyphs are inside
+ * the chip rather than encoded as three variants of its fill: "★★☆" is legible in
+ * greyscale, at a glance, and without having learnt a key. The fill still ramps with
+ * the rating, but only as a second and redundant channel.
  *
- * Filled dot / hollow dot is a strength ramp. "Wants to learn" gets a diamond and a
- * dashed edge instead, because it is not a third rung of that ramp - it says the
- * person cannot do this today. It still appears in the list, and that is deliberate:
+ * A zero-star chip is somebody who wants to learn this and cannot do it yet. It gets a
+ * dashed edge, because it is not the bottom rung of the capability ramp - it is off
+ * that scale entirely. It appears in the list all the same, and that is deliberate:
  * these chips are how you find who could take something, and a learner who is never
- * surfaced is never offered the work. The glyph is what stops that being misread as
- * capability at a glance.
+ * surfaced is never offered the work. The hollow stars are what stop that being
+ * misread as capability.
  */
-const SkillChip = styled.span<{ $level: SkillLevel }>`
+const SkillChip = styled.span<{ $stars: number; $learning: boolean }>`
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   gap: 5px;
   font-size: 11px;
   font-weight: 600;
   border-radius: ${radius.pill};
   padding: 2px 9px;
   white-space: nowrap;
-  color: ${(p) => {
-    if (p.$level === 'primary') {
-      return '#ffffff';
-    }
-    return p.$level === 'learning' ? palette.deepMagenta : palette.ink;
-  }};
-  background: ${(p) => {
-    if (p.$level === 'primary') {
-      return palette.hotPink;
-    }
-    return p.$level === 'learning' ? palette.card : palette.blush;
-  }};
-  border: 1px ${(p) => (p.$level === 'learning' ? 'dashed' : 'solid')}
-    ${(p) => (p.$level === 'primary' ? palette.hotPink : palette.borderStrong)};
+  color: ${(p) =>
+    p.$stars >= 3 ? '#ffffff' : p.$stars === 0 ? palette.deepMagenta : palette.ink};
+  background: ${(p) =>
+    p.$stars >= 3 ? palette.hotPink : p.$stars === 0 ? palette.card : palette.blush};
+  border: 1px ${(p) => (p.$stars === 0 ? 'dashed' : 'solid')}
+    ${(p) => (p.$stars >= 3 ? palette.hotPink : palette.borderStrong)};
 
-  &::before {
-    content: ${(p) => {
-      if (p.$level === 'primary') {
-        return "'●'";
-      }
-      return p.$level === 'learning' ? "'◇'" : "'○'";
-    }};
-    font-size: ${(p) => (p.$level === 'learning' ? '9px' : '8px')};
-    line-height: 1;
-  }
+  /*
+    Appetite marked on the right edge, so it is visible on a chip that ALSO has stars.
+    Stars and wanting the work are independent now, and without this a three-star
+    person who wants more of it would be indistinguishable from one who does not -
+    which is the whole reason the two were split apart in the first place.
+  */
+  border-right-width: ${(p) => (p.$learning ? '3px' : undefined)};
+  border-right-color: ${(p) => (p.$learning ? palette.deepMagenta : undefined)};
 `;
 
-/**
- * Display order within one person's chips, and the words for each level.
- *
- * Keyed off the level rather than a chain of ternaries so that adding a fourth level
- * is one entry in each map and a type error everywhere it was forgotten - which is
- * how this one arrived.
- */
-const SKILL_ORDER: Record<SkillLevel, number> = { primary: 0, secondary: 1, learning: 2 };
+/*
+  The stars inside a chip.
 
-const SKILL_TITLE: Record<SkillLevel, string> = {
-  primary: 'The obvious person to ask',
-  secondary: 'Can do this; it will take longer',
-  learning: 'Cannot do this yet — wants to be given this work',
-};
+  Dimmed with opacity rather than given their own colour, so one rule works on the
+  hot-pink three-star fill and on the pale fills underneath it. A fixed colour would
+  have to be picked twice and would be wrong on one of them.
+*/
+const ChipStars = styled.span`
+  letter-spacing: 0.5px;
+  font-size: 9px;
+  opacity: 0.8;
+`;
+
+/** One chip's tooltip: the rating in words, and appetite when it is set. */
+function skillTitle(stars: number, wantsToLearn: boolean): string {
+  return wantsToLearn ? `${starLabel(stars)} — and wants this work` : starLabel(stars);
+}
 
 const Nothing = styled.span`
   font-size: 12px;
@@ -309,6 +305,7 @@ export default function TeamPage() {
 
   const [editing, setEditing] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [inviting, setInviting] = useState(false);
   const [showChart, setShowChart] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -561,6 +558,22 @@ export default function TeamPage() {
             {adding ? 'Close' : isAdmin ? 'Add person' : 'Add myself'}
           </PrimaryButton>
         ) : null}
+        {/* Admin only, and separate from "Add person" on purpose: one grants a login,
+            the other creates a roster row, and merging them into a single button
+            would mean either inviting everyone you schedule work for or listing
+            everyone who can sign in as staff. */}
+        {isAdmin ? (
+          <SecondaryButton
+            type="button"
+            onClick={() => {
+              setInviting((v) => !v);
+              setAdding(false);
+              setEditing(null);
+            }}
+          >
+            {inviting ? 'Close' : 'Invite somebody'}
+          </SecondaryButton>
+        ) : null}
         <ToggleButton
           type="button"
           $on={showChart}
@@ -632,6 +645,13 @@ export default function TeamPage() {
         </ChartPanel>
       ) : null}
 
+      {inviting && isAdmin ? (
+        <NewPanel>
+          <PanelTitle>Give somebody a login</PanelTitle>
+          <InvitePanel />
+        </NewPanel>
+      ) : null}
+
       {adding && canAdd ? (
         <NewPanel>
           <PanelTitle>{isAdmin ? 'Add somebody to the roster' : 'Add yourself to the roster'}</PanelTitle>
@@ -686,16 +706,20 @@ export default function TeamPage() {
                       ) : (
                         [...person.specialisations]
                           // Strongest first: the reason to scan this column is to find
-                          // who to ask, not to read an alphabetical list. Learners go
-                          // last - they are in the list on purpose, but they are the
-                          // answer to a different question than the top of it.
-                          .sort(
-                            (a, b) =>
-                              SKILL_ORDER[a.level] - SKILL_ORDER[b.level] ||
-                              a.skill.localeCompare(b.skill)
-                          )
+                          // who to ask, not to read an alphabetical list. Zero-star
+                          // learners fall to the bottom - they are in the list on
+                          // purpose, but they answer a different question than the top
+                          // of it. The comparator lives in utils/skills.ts because the
+                          // ordering is a claim about the scale, not about this table.
+                          .sort(compareSpecialisations)
                           .map((s) => (
-                            <SkillChip key={s.skill} $level={s.level} title={SKILL_TITLE[s.level]}>
+                            <SkillChip
+                              key={s.skill}
+                              $stars={s.stars}
+                              $learning={s.wants_to_learn}
+                              title={skillTitle(s.stars, s.wants_to_learn)}
+                            >
+                              <ChipStars aria-hidden="true">{starGlyphs(s.stars)}</ChipStars>
                               {labels.get(s.skill) ?? s.skill}
                             </SkillChip>
                           ))

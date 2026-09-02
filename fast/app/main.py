@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from mangum import Mangum
 
 from app import config
-from app.routes import identity, people, projects, roadmap
+from app.routes import identity, people, projects, roadmap, service, slack
 
 # Configure logging.
 #
@@ -47,6 +47,15 @@ app.include_router(people.skills_router)
 app.include_router(people.roles_router)
 app.include_router(projects.router)
 app.include_router(roadmap.router)
+
+# The Slack directory the invite picker is built from. Read-only and admin-only, and
+# it creates no roster rows - see routes/slack.py for why that separation matters.
+app.include_router(slack.router)
+
+# The only router not reached by a signed-in human. IAM-authorized rather than
+# Cognito-authorized, for the Slack bot - see routes/service.py, which is short and
+# worth reading before anything is added to it.
+app.include_router(service.router)
 
 
 @app.get("/health")

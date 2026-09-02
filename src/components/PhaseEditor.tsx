@@ -1,5 +1,20 @@
 /**
- * Add a phase to a lane, or edit one.
+ * Add a phase to a lane, or edit one, or delete it.
+ *
+ * DELETING IS THE EXPECTED USE, NOT THE EXCEPTIONAL ONE
+ * ----------------------------------------------------
+ * A new lane is seeded with six standard phases (see STANDARD_PHASES in
+ * ProjectEditor.tsx), and that seeding is deliberately generous: it is easier to
+ * remove a stage than to remember one. Not every project has a Wireframes stage, and
+ * before this control existed the only way to correct that was to leave the row there
+ * undated forever - which reads on the chart as "wireframes are planned, nobody has
+ * scheduled them" rather than "there are none". So the delete is not an escape hatch
+ * for mistakes; it is the second half of the seeding.
+ *
+ * It is a real delete rather than an archive flag, because an archived phase would
+ * still carry dates and progress and would go on feeding the lane's rolled-up state
+ * and the chart's span while drawing nothing. The audit row keeps the whole
+ * before-snapshot, which is where a phase deleted in error can be read back from.
  *
  * THE ONE RULE THIS FILE EXISTS TO ENFORCE, ON THE EDIT PATH: send only what changed.
  *
@@ -31,9 +46,18 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import styled from 'styled-components';
 
-import { createPhase, describeError, patchPhase } from '../services/api';
+import { createPhase, deletePhase, describeError, patchPhase } from '../services/api';
 import { palette } from '../styles/theme';
-import { ErrorText, Hint, Input, Label, PrimaryButton, SecondaryButton, Select } from '../styles/ui';
+import {
+  DangerButton,
+  ErrorText,
+  Hint,
+  Input,
+  Label,
+  PrimaryButton,
+  SecondaryButton,
+  Select,
+} from '../styles/ui';
 import type { Person, Phase, PhaseCreate, PhasePatch } from '../types';
 
 interface FormValues {
@@ -166,18 +190,27 @@ export type PhaseEditorProps = {
   onSaved: (phase: Phase) => void;
   onCancel: () => void;
 } & (
-  | { phase: Phase; projectId?: never; nextPhaseOrder?: never }
+  | {
+      phase: Phase;
+      projectId?: never;
+      nextPhaseOrder?: never;
+      /** Edit only. There is nothing to delete on the create path. */
+      onDeleted: (projectId: string, phaseId: string) => void;
+    }
   | {
       phase: null;
       projectId: string;
       /** Where the new row sits in the lane - the API defaults it to 0, i.e. the top. */
       nextPhaseOrder: number;
+      onDeleted?: never;
     }
 );
 
 export default function PhaseEditor(props: PhaseEditorProps) {
   const { phase, people, onSaved, onCancel } = props;
   const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   const {
     register,
@@ -220,6 +253,25 @@ export default function PhaseEditor(props: PhaseEditorProps) {
       setError(describeError(err));
     }
   });
+
+  const onDelete = async () => {
+    if (!phase) {
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    try {
+      await deletePhase(phase.project_id, phase.phase_id);
+      props.onDeleted(phase.project_id, phase.phase_id);
+    } catch (err) {
+      setError(describeError(err));
+      setConfirming(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disabled = isSubmitting || busy;
 
   return (
     <Form onSubmit={onSubmit}>
@@ -309,14 +361,37 @@ export default function PhaseEditor(props: PhaseEditorProps) {
         {errors.name ? <ErrorText>{errors.name.message}</ErrorText> : null}
         {errors.progress ? <ErrorText>{errors.progress.message}</ErrorText> : null}
         {error ? <ErrorText role="alert">{error}</ErrorText> : null}
-        <SecondaryButton type="button" onClick={onCancel} disabled={isSubmitting}>
-          Cancel
-        </SecondaryButton>
-        {/* `isDirty` gates an edit that changed nothing. It must not gate a create:
-            "Coding, no dates yet" is a pristine form and a perfectly good phase. */}
-        <PrimaryButton type="submit" disabled={isSubmitting || (phase !== null && !isDirty)}>
-          {isSubmitting ? 'Saving…' : phase ? 'Save phase' : 'Add phase'}
-        </PrimaryButton>
+
+        {phase && confirming ? (
+          <>
+            {/* Confirmed in place rather than through a window.confirm, so the name
+                being deleted stays on screen while the question is asked. Same as
+                MilestoneEditor and the roster's delete. */}
+            <Hint>Delete &ldquo;{phase.name}&rdquo;? This cannot be undone.</Hint>
+            <SecondaryButton type="button" onClick={() => setConfirming(false)} disabled={disabled}>
+              Keep it
+            </SecondaryButton>
+            <DangerButton type="button" onClick={() => void onDelete()} disabled={disabled}>
+              {busy ? 'Deleting…' : 'Delete'}
+            </DangerButton>
+          </>
+        ) : (
+          <>
+            {phase ? (
+              <SecondaryButton type="button" onClick={() => setConfirming(true)} disabled={disabled}>
+                Delete
+              </SecondaryButton>
+            ) : null}
+            <SecondaryButton type="button" onClick={onCancel} disabled={disabled}>
+              Cancel
+            </SecondaryButton>
+            {/* `isDirty` gates an edit that changed nothing. It must not gate a create:
+                "Coding, no dates yet" is a pristine form and a perfectly good phase. */}
+            <PrimaryButton type="submit" disabled={disabled || (phase !== null && !isDirty)}>
+              {isSubmitting ? 'Saving…' : phase ? 'Save phase' : 'Add phase'}
+            </PrimaryButton>
+          </>
+        )}
       </Actions>
     </Form>
   );

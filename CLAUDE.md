@@ -12,9 +12,9 @@ Replaces `~/projects/Planning Gantt Chart (Aug24).xlsx`. The workbook is being
 - **Account**: AWS 778983355679 (ca-central-1) — same as the marketing tool
 - **Status**: everything built so far is **deployed to `dev`** — migration, backend,
   frontend, infra, plus the Team page, the specialisations vocabulary and
-  milestones. 154 backend tests + 79 frontend tests pass.
+  milestones. 176 backend tests + 97 frontend tests pass.
   Verified against the deployed Lambda on 2026-09-01, not inferred from a successful
-  `cdk deploy`: `/api/skills` answers with all ten skills, `/api/roles` answers with
+  `cdk deploy`: `/api/skills` answers with all eleven skills, `/api/roles` answers with
   all six roles, and a synthetic caller holding `cognito:groups = "[marketing]"`
   still gets `403`.
   A 401 on `/api/roles` from outside proves only that the authorizer is in front of
@@ -26,8 +26,9 @@ Replaces `~/projects/Planning Gantt Chart (Aug24).xlsx`. The workbook is being
   a person can be **hard-deleted** (blanking every assignment naming them), and the
   Team page carries a **schedule Gantt** — one row per person, phases they own drawn
   as bars and the projects they are DRI/Support on as pale bands behind. Since *that*:
-  the skill picker offers **four answers** (No / Yes, but slowly / Yes / No, but wants
-  to learn), the roster is **self-service** (edit yourself; admins edit anyone), and
+  the skill picker is a **three-star rating with a legend**, plus a separate "wants to
+  learn" tick (the two are independent axes; **Figma** joined the vocabulary beside
+  ui-ux), the roster is **self-service** (edit yourself; admins edit anyone), and
   the `planning` group check is **off** so any pool account can get in. Since *that*:
   people carry **roles** (BA / UX / Software engineer / QA / Data / Leadership — one
   or more, required on sign-up) and the **`manager_email` field is gone** from the
@@ -203,6 +204,211 @@ controls appear a beat late rather than appearing and being taken away.
 
 ---
 
+## Inviting somebody, and the gate they land on
+
+Getting a colleague into this app is **two separate things that deliberately did not
+get merged**:
+
+| | grants | creates a roster row | who does it |
+|---|---|---|---|
+| `POST /api/people/invite` | a Cognito login + the `planning` group | **no** | an admin |
+| `POST /api/people` | nothing | **yes** | the person themselves, at onboarding |
+
+Merging them was the obvious design and is the wrong one. An admin knows somebody's
+address; they do not know their skills, and a roster row invented on their behalf is
+a row nobody owns and nobody corrects. So the invite grants **access and nothing
+else**, and the person fills in their own entry the first time they arrive.
+
+`InviteResult` returns `account_created` and `group_added` as separate booleans and
+**both false is a normal outcome, not an error** — it means the person already had a
+login (very likely, given the shared pool) and was already in the group. Re-inviting
+is idempotent and safe.
+
+### Cognito's own email is not enough, and cannot be fixed from here
+
+The pool does email a temporary password. Two things are wrong with it:
+
+1. **It contains no link** — username and password, nothing about where to sign in.
+2. **It is branded "QWealth Marketing Compliance Review"**, because the pool is
+   shared and the invite template is per-**pool**, not per-app.
+
+Rebranding it would change what the compliance tool's invitees receive, and that
+template may well be managed by *their* CDK, in which case an edit from here is
+silently reverted on their next deploy. So the gap is closed by a human:
+`InvitePanel` renders a ready-to-send block of text with the URL in it, and that text
+**names the wrong-looking subject line on purpose**. An unexplained credentials email
+about a compliance tool is exactly the shape of a phishing attempt, and the correct
+response to one of those is to ignore it — so an invite that does not pre-empt that
+gets ignored by the most security-conscious people on the team.
+
+`inviteMessage()` is exported and pure so it can be asserted on without a DOM.
+
+### The onboarding gate
+
+`AppShell` renders `Onboarding` **instead of** the nav when a caller is authorised
+but has no roster row. It blocks rather than nudges: a dismissible banner would leave
+the roster as "everyone except the people who clicked the X", which is worse than no
+roster because it *looks* complete.
+
+It is **a routing gate, not a security one.** Every route stays open server-side;
+skipping the screen would grant nothing.
+
+**`onboarded` on `/api/me` FAILS OPEN, and the shell must keep reading it that way.**
+
+```ts
+if (identity?.authorised && identity.onboarded === false && identity.email)
+```
+
+`=== false`, never `!identity.onboarded`. The field is optional: a backend deployed
+before it existed returns `undefined`, and `!` would read that as "not onboarded" and
+gate the **whole team** out of a working roadmap behind a form they already filled
+in. `_has_roster_row` likewise answers `true` when DynamoDB cannot be reached. Only
+an explicit `false`, from a backend that actually looked, blocks anybody.
+
+The gate has **no Cancel** — `PersonEditor.onCancel` is optional precisely so this
+screen can omit it, because a Cancel wired to a no-op is a button that visibly does
+nothing. Sign-out **is** offered, because "I am not who this account says I am" needs
+an answer that is not "close the tab".
+
+The email field is `disabled` and the saved value is taken from `lockedEmail`, **not
+from the form** — a disabled input is exactly the kind of thing a form library is
+entitled to drop.
+
+### Exercising it locally
+
+`demo.py` stands up a **moto Cognito pool** with the planning group already in it, so
+"Invite somebody" is clickable offline. Worth the eight lines: the real endpoint
+writes to the pool shared with marketing, and a wrong first attempt there does not
+fail quietly — it creates an account a colleague gets an email about.
+
+To land on the gate, sign in locally as somebody with no roster row:
+
+```bash
+DEV_USER_EMAIL=piper@qwealth.com ./venv/bin/python demo.py
+```
+
+`auth.signOut` comes from Amplify's `useAuthenticator`, so it is `undefined` under
+`demo.py` and **the Sign out button does not render locally**. That escape hatch can
+only be checked in a deployed build.
+
+### The third caller: `/roadmap-invite` in Slack
+
+Inviting somebody used to end with a human copying a block of text out of the web UI
+and pasting it into Slack — the step most likely to be skipped, and a login nobody
+was told about is *worse* than no login, because it silently consumes an invitation
+email that reads like phishing. So Slack can now do the whole thing.
+
+The command lives in the **other repo**: `aardvarkaap/aardvark-aap/src/slack/
+roadmap.ts`. Three facts about it matter here.
+
+**The message is composed server-side, and that is the reason `app/invites.py`
+exists.** `cognito.py` is *how* the pool is written to, `invites.py` is *what
+inviting means*, and the `routes/` are *who may ask*. Both front doors — the web
+button and the Slack command — call `perform_invite`, so the phishing-pre-emption
+paragraph exists exactly once. It used to be built in the browser from
+`window.location.origin`, which meant a dev build could mail a colleague a
+`localhost` link.
+
+**Slack's people-picker is the only input, deliberately.** The address is read from
+the selected person's Slack profile rather than typed. Typing would be two
+descriptions of one human that are free to disagree — creating a Cognito account for
+one colleague and DMing the instructions to another, on a pool shared with
+marketing. This is what needs the `users:read.email` scope; without it Slack returns
+a profile with no `email` and no error, so the command looks broken for a reason
+found only in Slack's docs.
+
+**It is authorized by IAM, not Cognito** — an ECS task has no token and cannot get
+one. Hence `/api/service/*` as a separate path: a method carries exactly one
+authorizer, so this could not be a flag on `/api/people/invite`.
+
+Four things must agree, across two repositories, or this fails with a bare 403 that
+names none of them:
+
+| Thing | Where |
+|---|---|
+| Role name `aardvark-app-task-role` | `aardvarkaap/lib/aardvark-app-stack.ts` (pinned, not auto-named) |
+| The same name, allowlisted | `cdk/cdk.json` → `service_caller_arns` |
+| `execute-api:Invoke` on the one method | `aardvarkaap/lib/aardvark-app-stack.ts` |
+| API id + stage | `ROADMAP_API_ID` in that stack, `ROADMAP_API_HOST` in `roadmap.ts` |
+
+The grant and the allowlist are **two locks, and neither alone does anything**:
+without the grant API Gateway refuses the signature; without the allowlist entry
+`require_service_caller` refuses the caller. `SERVICE_CALLER_ARNS` empty means the
+door is shut, which is the right way for this to be misconfigured.
+
+Two traps worth writing down:
+
+- **Sign the execute-api host, never the custom domain.** SigV4 covers the `Host`
+  header, so a request signed for `slxqk1v4x3.execute-api…` and sent to
+  `planning.qconnect.qwnext.com` (CloudFront in front of the same API) is rejected as
+  a signature mismatch. The custom domain is for browsers; machines talk to the
+  gateway.
+- **An ECS task role has no `AWS_ACCESS_KEY_ID`.** Credentials arrive through the
+  container credentials endpoint, so `aws4` plus environment variables would find
+  nothing and sign with garbage. `roadmap.ts` uses `defaultProvider()` for this
+  reason.
+
+Matching is on the **role**, not the full ARN, because ECS regenerates the
+assumed-role session suffix on every task — `_role_name` in `app/auth.py` reduces
+both sides before comparing, and `test_service_invite.py` pins that behaviour.
+
+The Slack command is gated by **Aardvark's own admin list**, a MySQL `admins` table —
+*not* the Cognito `admin` group this app uses everywhere else. That is a real
+delegation of account-creation power to a permission set maintained in another
+system, and it is written into `cdk.json` so the decision is reviewable here.
+
+### The other direction: the Slack picker on the Team page
+
+The command above starts in Slack. The **picker** starts here: the Team page invite
+panel lists the Slack workspace and the admin chooses a person, so the address is
+*read* rather than typed. Same reasoning as the command's people-picker — a typo
+creates a Cognito account on the shared pool and mails a stranger a password — but
+reached from the web app, which is where an admin already is.
+
+**Planning calls Slack directly.** Not via Aardvark, which would have been the
+obvious reuse: Aardvark's ALB is plain HTTP with no certificate and no service
+authentication, so proxying the directory through it would put every employee's
+email address in clear text across an unauthenticated endpoint. This Lambda is
+**not in a VPC** (`VpcConfig` is empty) and reaches `api.slack.com` over TLS.
+
+The cost is a **shared bot token**: `aardvark-app/slack`, read from Secrets Manager,
+never put in a Lambda environment variable — anyone with
+`lambda:GetFunctionConfiguration` can read those, which is a wider group than can
+read the secret. `lambda_stack.py` grants `GetSecretValue` on that one ARN, and the
+`-??????` suffix is mandatory: Secrets Manager ARNs carry six random characters, so
+a policy without it matches nothing. The visible consequence of sharing is that the
+DM arrives **from Aardvark**, which is consistent with `/roadmap-invite`.
+
+**The picker creates nothing.** It answers "who *could* I invite", not "who is on the
+team". Seeding the roster from Slack was considered and rejected: every member would
+arrive `onboarded`, the onboarding gate would stop firing for anybody, and the roles
+and skills the roadmap runs on would sit empty with nothing left to prompt them.
+`on_roster` is the only field that crosses over, and it exists so the picker can say
+somebody is already set up instead of letting an admin discover it from the result.
+
+**`GET /api/slack/people` never 5xxs for a Slack problem.** An outage, a missing
+scope and an unconfigured secret all come back `200` with `unavailable` set, and the
+panel falls back to a typed address — which is what it did before Slack. Losing the
+convenience is acceptable; losing the ability to give a colleague access because a
+third party is down is not.
+
+Two failure modes that look like nothing:
+
+- **A missing `users:read.email` scope is invisible.** Slack returns every profile
+  with no `email` key and *no error*, so the directory filters itself empty and the
+  picker looks like a workspace with nobody in it. `list_people` therefore returns
+  `{"people", "seen"}` rather than a list, the route turns that into `filtered`, and
+  the panel says "42 accounts but no email addresses" instead of "no people found".
+- **Adding a scope does nothing until the app is REINSTALLED** to the workspace.
+
+**`slack_user_id` is a delivery route, not an identity.** The email is still the key.
+A failed DM is deliberately *not* re-raised — the Cognito account already exists by
+then, so failing the request would report "invite failed" for something that
+half-succeeded and send the admin retrying into an account that is already there.
+`dm_error` comes back instead and the panel shows the copy block.
+
+---
+
 ## DNS: `planning.qconnect.qwnext.com`
 
 **Live.** `planning.qconnect.qwnext.com`, in hosted zone `Z05305531FKJD83WOWYAD`
@@ -315,7 +521,7 @@ planning_roadmap/
 │   │   ├── roles.py             ← the CLOSED role vocabulary (what someone IS)
 │   │   ├── skills.py            ← the CLOSED specialisation vocabulary (what they CAN DO)
 │   │   └── seeds/load_roadmap.py ← roadmap.json + people map → DynamoDB
-│   └── tests/                   ← 159 tests, moto-backed. test_people_self_service.py
+│   └── tests/                   ← 176 tests, moto-backed. test_people_self_service.py
 │                                  is the who-may-act-on-whom rule, over HTTP
 ├── src/                         ← React frontend
 │   ├── App.tsx                  ← LoginGate + BrowserRouter + the two routes
@@ -329,7 +535,7 @@ planning_roadmap/
 │   │   │                          Bar.tsx, parts.ts, SegmentedBar.tsx,
 │   │   │                          MilestoneMarks.tsx
 │   │   ├── AppShell.tsx         ← masthead, tabs, /api/me check, <Outlet/>
-│   │   ├── PhaseEditor.tsx      ← add/edit one phase; edit sends only dirty fields
+│   │   ├── PhaseEditor.tsx      ← add/edit/delete one phase; edit sends only dirty fields
 │   │   ├── ProjectEditor.tsx    ← add/edit one project; seeds STANDARD_PHASES
 │   │   ├── MilestoneEditor.tsx  ← add/edit one milestone; two-step delete
 │   │   ├── PersonEditor.tsx     ← add/edit one person; the skill picker
@@ -383,7 +589,8 @@ planning-roadmap-projects   PK project_id, SK sk
                                                        start, end, progress, structural
                             sk = "MILESTONE#<id>"    → name, date, note, done
 planning-roadmap-people     PK email                 → name, roles [str], active,
-                                                       specialisations [{skill, level}]
+                                                       specialisations [{skill, stars,
+                                                       wants_to_learn}]
 planning-roadmap-audit      PK entity_id, SK timestamp
                             GSI entity-timestamp-index (PK entity, SK timestamp)
                                                      → action, before, after, user_email
@@ -519,10 +726,11 @@ operation. Pinned by `test_leadership_is_a_job_not_a_permission`.
 says "I can be staffed onto this". A back-end engineer who is handy with CSS holds
 `front-end` and is not `ux`. Roles stay coarse — six entries, for reading a roster at a
 glance — and granularity belongs in skills, which is the list that grows. The two
-pickers are deliberately shaped differently: skills are a welded segmented pill ("pick
-one of four"), roles are detached chips with ticks ("pick as many as apply"). Reusing
-the segmented control would make the form lie about what it accepts, and a BA ticking
-UX would watch BA switch itself off.
+pickers are deliberately shaped differently: skills are a star rating plus a separate
+tick ("how much, and do you want more"), roles are detached chips with ticks ("pick as
+many as apply"). Giving roles a rating would invite the question of how many stars of
+BA somebody is, which is not a thing; giving skills plain chips would throw away the
+grading the staffing question is entirely about.
 
 Like `specialisations`, `roles` **replaces rather than merges**, so `PersonEditor`
 compares the set by value (`utils/roles.ts`) instead of trusting RHF's `dirtyFields`.
@@ -569,6 +777,8 @@ Removed together on 2026-09-01 as clutter. What went, and what did NOT:
 | The "Show deactivated" toggle | `TeamPage.tsx` |
 | "Adding somebody here does not grant them a login." | `TeamPage.tsx` |
 | The legend group: *done / remaining / progress not recorded / single-day phase* | `src/components/Legend.tsx` |
+| The matching *progress not recorded* item on the Team chart's key | `chart/TeamChart.tsx`, and `HatchedSwatch` with it |
+| The two summary chips: *Today \<date\>* and *N projects · N phases · N milestones* | `RoadmapPage.tsx` |
 
 **The chart itself is unchanged.** It still draws the pale fill for remaining work,
 the hatching for unrecorded progress, and the diamond for a single-day phase — only
@@ -607,63 +817,91 @@ belongs: against the workbook, not against live data on every request.
 ### Specialisations — what somebody CAN DO
 
 A **closed** vocabulary in `fast/app/skills.py`, served by `GET /api/skills`, held
-against a person as `[{skill, level}]`. Ten skills: front-end, back-end,
-infrastructure, relational-databases, non-relational-databases, networking, ui-ux,
-qa-testing, data-engineering, compliance.
+against a person as `[{skill, stars, wants_to_learn}]`. Eleven skills: front-end,
+back-end, infrastructure, relational-databases, non-relational-databases, networking,
+ui-ux, figma, qa-testing, data-engineering, compliance.
 
 Closed because the workbook's free-text ownership is exactly what we are leaving:
-"frontend", "front-end", "Front End" and "FE" are four strings and one skill. No
-numeric proficiency scale, and **no cap on how many people hold `primary`** — a 422
-on the third primary would only teach people to lie to the form.
+"frontend", "front-end", "Front End" and "FE" are four strings and one skill.
+**No cap on how many people hold three stars** — a 422 on the third expert would only
+teach people to lie to the form.
 
-**Four answers in the UI, three of them stored:**
+Catalogue order is the form's order; `PersonEditor` maps straight over it. Figma sits
+next to ui-ux rather than at the end of the enum where new members otherwise land, and
+`test_figma_is_offered_next_to_ui_ux` pins that so a later addition does not drift it.
 
-| The form says | Stored as | Means |
+**TWO AXES, AND NEITHER IMPLIES THE OTHER:**
+
+| Field | Range | Means |
 |---|---|---|
-| No | *nothing* | absence is the answer |
-| Yes, but slowly | `secondary` | can do it, will take longer |
-| Yes | `primary` | the obvious person to ask |
-| No, but wants to learn | `learning` | cannot do it today, wants the work |
+| `stars` | 0–3 | what they can do **today** |
+| `wants_to_learn` | bool | whether they want to be **given this work** |
 
-Two things about that table are load-bearing.
+The rungs, worded in the first person because people are usually describing
+themselves. These live in `src/utils/skills.ts` as `STAR_LABELS` and are rendered as a
+legend above the picker, so the scale is stated once rather than implied by each row:
 
-**The stored values still read `primary`/`secondary` because the wording changed and
-the data did not.** The labels used to be "yes" and "could cover". Relabelling is a
-presentation change and must never rewrite what is in DynamoDB, so there was no
-migration and there should never be one — see the enum-values point below.
+| Stars | Label |
+|---|---|
+| 0 | Not one of their areas |
+| 1 | Can help out, with somebody alongside |
+| 2 | Can do it, but it will take longer |
+| 3 | The obvious person to ask |
 
-**`learning` is NOT a third rung of the capability ladder.** It describes appetite,
-not ability, and everything about how it is drawn says so: on the chips it gets a
-diamond `◇` and a dashed edge rather than a paler pink, and in the picker it gets a
-blush fill with an outlined ring instead of a place on the grey → bubblegum → hot-pink
-ramp. Painting it as a weaker "yes" would file appetite under ability, which is the
-one thing it is not.
+**This replaced a single four-valued `level`** (`primary`/`secondary`/`learning`).
+`learning` was welded onto a capability ladder while explicitly not being a rung of
+one, so every consumer needed a comment telling it not to sort `learning` as a weaker
+`secondary`. Splitting the axes makes the ordering *arithmetic*
+(`b.stars - a.stars || Number(a.wants_to_learn) - Number(b.wants_to_learn)`, in
+`compareSpecialisations`) instead of a `Record<SkillLevel, number>` lookup table that
+every new consumer had to remember to extend, and it makes the combination the old
+control could not express — three stars *and* wants more of it — sayable.
 
-It **does** count as cover: a learner shows up when you go looking for who could take
-something, which is the whole point of recording it — a learner who is never surfaced
-is never offered the work. That only holds while the level is displayed next to the
-name everywhere the list is read, so do not add a caller that reads `specialisations`
-and drops the level.
+A zero-star entry with no appetite says nothing and is **refused** by
+`SpecialisationIn.must_say_something` (422) rather than stored; the form drops the row
+instead of sending one. Zero stars *with* appetite is a real and useful answer: that
+person is exactly who a staffing search should surface when nobody else is free.
 
-One layout note, because it is invisible until it bites: **"No, but wants to learn" is
-a long label** and the four segments no longer fit the picker's old 300px grid track.
-`Segments` has `overflow: hidden` for its rounded ends, so a cramped row does not wrap
-or scroll — it *clips*, and the first casualty is the "No" segment sliding off the
-left edge where it cannot be clicked. The track minimum is 460px for that reason, and
-`Segments` is `flex-shrink: 0` so the skill name gives way instead of the control.
-Nothing in the type system or the tests can see this happen; it was caught by looking.
+`stars` **defaults to 2, not 3**. Omitting the rating must not silently make somebody
+the obvious person to ask — that is a claim about them they did not make, and it is
+the one that gets acted on when work is handed out.
+
+**NOTHING WAS MIGRATED, AND THE READ PATH IS THE MIGRATION.** Rows still holding a
+`level` string are mapped on read in `PersonModel._specialisations`
+(`primary`→3, `secondary`→2, `learning`→0 + `wants_to_learn`, anything else→2), which
+is already the "one bad record must not 500 the endpoint" layer. There is no backfill
+script and no downtime. **Do not delete that mapping once the table looks converted** —
+the tests under "the migration, which only exists on the read path" in
+`fast/tests/test_skills.py` are its only proof.
+
+Reads are lenient, writes are strict, and the asymmetry is deliberate:
+
+- A **write** of `stars` outside 0–3 is a 422. `SpecialisationIn` also sets
+  `extra="forbid"`, so a browser left open on the pre-stars bundle posting
+  `{"skill": ..., "level": "primary"}` gets an error rather than having the `level`
+  ignored and the person silently re-recorded at the default two stars.
+- A **read** clamps instead of raising: hand-edited data and a future scale with more
+  rungs both have to land somewhere, and raising would take the whole roster down over
+  one person's row. `clampStars` mirrors this frontend-side, where a non-finite value
+  is treated as *no rating* rather than as a huge one.
 
 Three things to know before touching this:
 
 - **The enum *values* are stored against people.** Renaming one orphans everyone who
   holds it and they silently appear to have lost the skill.
   `test_skill_values_are_stable_identifiers` guards it. Do not duplicate the list in
-  TypeScript for the same reason — the frontend fetches it.
+  TypeScript for the same reason — the frontend fetches it. The **scale** is the
+  exception and is hardcoded in `src/utils/skills.ts`: three fixed rungs bounded by
+  their own constant are not data the way a growing vocabulary is, and fetching them
+  would cost a round trip to be told what `MAX_STARS` already says. A fourth rung is a
+  change to `fast/app/skills.py` *and* a deploy of both halves.
 - **`specialisations` REPLACES, it does not merge.** It is the one exception to the
   absent-≠-null rule above: a merging update could only ever add, so "remove a skill"
   would be unexpressible. `PersonEditor.tsx` therefore compares the resulting *set*
-  by value rather than trusting RHF's `dirtyFields`, which flags the whole map dirty
-  the moment one skill moves.
+  by value (`sameSpecialisations`, in `src/utils/skills.ts`) rather than trusting RHF's
+  `dirtyFields`, which flags the whole map dirty the moment one control moves. It lives
+  under `utils/` so it is unit-testable — importing `PersonEditor` would pull in
+  `services/api.ts`, which configures a Cognito pool at import time.
 - **Rows written before the field existed read back as `[]`.** That is the state of
   the ten people in `dev` right now, not a hypothetical, and getting it wrong 500s
   the roster for everybody. `PersonModel._specialisations` drops malformed entries
@@ -700,6 +938,33 @@ briefly disagree.
 more than one place and the affordance for "this does not come back" must look
 identical everywhere.
 
+### Deleting a phase is the other half of seeding one
+
+A new lane is seeded with six standard phases (`STANDARD_PHASES` in
+`ProjectEditor.tsx`), and that seeding is deliberately generous on the argument that
+it is easier to remove a stage than to remember one. `PhaseEditor` carries the
+matching Delete, so **removing a stage a project does not have is the normal use of
+it, not an escape hatch for mistakes.** Before it existed the only way to correct an
+inapplicable Wireframes row was to leave it undated forever, which the chart reads as
+"planned, nobody has scheduled it" rather than "there is none".
+
+Real delete, not an archive flag, for the same reason as milestones: an archived phase
+would still carry dates and progress, so it would go on widening the chart's span and
+feeding the lane's rolled-up state while drawing nothing — a lane captioned
+"Coding · 40%" with no Coding bar on it. The audit row keeps the whole before-snapshot,
+which is where one deleted in error is read back from.
+
+Two things that look incidental and are not:
+
+- **The 404 guard on the route is load-bearing.** DynamoDB's `delete_item` is happily
+  idempotent, so answering 204 for an unknown phase_id would be free — and wrong,
+  because the UI drops the row from the lane on any 2xx. A stale id would vanish from
+  the screen and reappear on the next load, which reads as a lost edit.
+  `test_deleting_an_unknown_phase_is_a_404_not_a_silent_success` pins it.
+- **`Lane.tsx` closes the editor before calling `onPhaseDeleted`.** The editor is
+  rendered *under the row for the phase being deleted*, so the other order strands an
+  open form editing something that no longer exists.
+
 ### Audit
 
 Keyed `entity_id` + `timestamp`, **not** the marketing tool's `timestamp`-only
@@ -718,7 +983,7 @@ similar obligation.
 
 ```bash
 (cd fast && python3 -m venv venv && ./venv/bin/pip install -r requirements-dev.txt)
-(cd fast && ./venv/bin/python -m pytest tests -q)      # 159 tests, moto-backed
+(cd fast && ./venv/bin/python -m pytest tests -q)      # 176 tests, moto-backed
 (cd fast && ./venv/bin/python demo.py)                  # seeded demo, no AWS at all
 (cd fast && ./run.sh)                                   # needs real AWS creds + tables
 ```

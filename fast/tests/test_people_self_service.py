@@ -168,11 +168,11 @@ def test_a_member_can_edit_their_own_specialisations(monkeypatch, aws):
 
     edited = client.patch(
         f"/api/people/{ME}",
-        json={"specialisations": [{"skill": "front-end", "level": "learning"}]},
+        json={"specialisations": [{"skill": "front-end", "stars": 0, "wants_to_learn": True}]},
     )
     assert edited.status_code == 200, edited.text
     assert edited.json()["specialisations"] == [
-        {"skill": "front-end", "level": "learning"}
+        {"skill": "front-end", "stars": 0, "wants_to_learn": True}
     ]
 
 

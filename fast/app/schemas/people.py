@@ -2,10 +2,17 @@
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from app.roles import Role
-from app.skills import Skill, SkillLevel
+from app.skills import MAX_STARS, MIN_STARS, Skill
 
 
 class SkillOut(BaseModel):
@@ -44,24 +51,66 @@ def _dedupe_roles(values: list[Role]) -> list[Role]:
 
 
 class SpecialisationIn(BaseModel):
-    """One skill somebody holds, as accepted from a caller."""
+    """
+    One skill somebody holds, or wants to, as accepted from a caller.
+
+    Two fields rather than one four-valued level - see the module docstring in
+    app/skills.py for why. `stars` is capability today; `wants_to_learn` is appetite,
+    and neither implies the other.
+    """
+
+    # The one model in this file that refuses unknown fields, and the reason is the
+    # field this one replaced. A browser left open on the pre-stars bundle still posts
+    # `{"skill": ..., "level": "primary"}`; ignored, that stores the person at the
+    # default two stars and silently demotes a rating they set themselves, with a 200
+    # and a form that looks saved. Refused, they get an error, reload, and see the new
+    # control. Reads still understand `level` - see PersonModel._specialisations - but
+    # a write is the one moment the old shape can do damage.
+    model_config = ConfigDict(extra="forbid")
 
     skill: Skill
-    level: SkillLevel = SkillLevel.SECONDARY
+    # Defaults to two, not three. Omitting the rating must not silently make somebody
+    # the obvious person to ask - that is a claim about them they did not make, and it
+    # is the one that gets acted on when work is being handed out.
+    stars: int = Field(default=2, ge=MIN_STARS, le=MAX_STARS)
+    wants_to_learn: bool = False
+
+    @model_validator(mode="after")
+    def must_say_something(self) -> "SpecialisationIn":
+        """
+        Refuse an entry that records neither ability nor interest.
+
+        Zero stars and no appetite is the same statement as having no entry at all,
+        and storing it would put a row on the person that reads as "asked, answered
+        no" while the absence of a row reads as "never asked" - a distinction this
+        app does not keep and should not appear to. The form clears the entry instead
+        of sending this, so reaching it means a caller hand-rolled the request.
+        """
+        if self.stars == MIN_STARS and not self.wants_to_learn:
+            raise ValueError(
+                f"{self.skill.value}: give it at least one star, or tick wants to learn"
+            )
+        return self
 
 
 class SpecialisationOut(BaseModel):
     """
     One skill somebody holds, as returned.
 
-    `skill` and `level` are plain strings here, not the enums, for the same reason
-    PersonOut.email is not EmailStr: a row written before a skill was renamed - or
-    hand-edited in the console - must not take down the whole roster response. Enums
-    validate on the way in, where a bad value can still be refused with a reason.
+    `skill` is a plain string here, not the enum, for the same reason PersonOut.email
+    is not EmailStr: a row written before a skill was renamed - or hand-edited in the
+    console - must not take down the whole roster response. Enums validate on the way
+    in, where a bad value can still be refused with a reason.
+
+    `stars` is unbounded here for the same reason, and deliberately carries no ge/le.
+    A hand-edited 7 should render as an odd-looking row, not 500 the endpoint;
+    PersonModel._specialisations clamps it on the way through anyway, which is the
+    right place because that is the layer that already knows about malformed items.
     """
 
     skill: str
-    level: str = SkillLevel.SECONDARY.value
+    stars: int = 0
+    wants_to_learn: bool = False
 
 
 def _dedupe(values: list[SpecialisationIn]) -> list[SpecialisationIn]:
@@ -118,6 +167,86 @@ class PersonBase(BaseModel):
 
 class PersonCreate(PersonBase):
     """Body for creating a person."""
+
+
+class InviteIn(BaseModel):
+    """
+    Body for inviting someone: an address, and nothing else.
+
+    Pointedly not a PersonCreate. An invite grants a login; it does not put anyone on
+    the roster, so there is no name to type and no roles to guess at. The invited
+    person supplies both themselves at onboarding, which is the only way those fields
+    are ever accurate - PersonBase requires roles precisely so nobody ends up as a
+    blank row somebody else has to chase.
+    """
+
+    email: EmailStr
+
+    # Who to DM the instructions to, when the address came from the Slack picker.
+    #
+    # Optional, and the address is still the identity: this is only a delivery route.
+    # It is a Slack user id rather than a second address precisely so the two cannot
+    # disagree - the picker supplies both from ONE chosen person, and anything else
+    # (a typed address, an import) simply leaves this empty and gets the copy-paste
+    # message back instead. See app/invites.py.
+    slack_user_id: Optional[str] = Field(default=None, max_length=32)
+
+    @field_validator("email")
+    @classmethod
+    def normalise(cls, value: str) -> str:
+        """Lowercased, for the same reason PersonBase does it - and for Cognito."""
+        return value.strip().lower()
+
+    @field_validator("slack_user_id")
+    @classmethod
+    def blank_is_absent(cls, value: Optional[str]) -> Optional[str]:
+        """
+        "" means "no Slack user", not "a Slack user whose id is empty".
+
+        A form that clears the picker sends an empty string rather than omitting the
+        field, and without this the DM would be attempted against an empty channel and
+        fail with Slack's unhelpful `channel_not_found`.
+        """
+        value = (value or "").strip()
+        return value or None
+
+
+class InviteOut(BaseModel):
+    """
+    What an invite actually did.
+
+    Two booleans rather than a 201/200 distinction, because there are three outcomes
+    worth telling the admin apart and HTTP has no status that says "they already had
+    an account, and now they can use this app too":
+
+        created + group   - a brand new colleague; Cognito has emailed them.
+        group only        - they had a compliance-tool login already, which is the
+                            usual case, and no email goes out. Somebody has to tell
+                            them, so the UI has to know.
+        neither           - nothing to do. They already had access.
+
+    `onboarded` is whether they already have a roster row, so the UI can say whether
+    to expect them to appear on the Team page now or only once they have signed in.
+
+    `message` is the text to actually send them, composed server-side so the Team page
+    and the Slack bot cannot drift into two differently-worded invitations - see
+    app/invites.py for why that matters more than it looks. Callers render it; they do
+    not build their own.
+
+    `dm_sent` says whether we already delivered that text over Slack. It is the
+    difference between "done" and "now go and tell them", and the UI must show the
+    message when it is False - an account nobody was told about is worse than no
+    account, because it silently consumes an invitation email that reads like
+    phishing. `dm_error` carries why, when we tried and could not.
+    """
+
+    email: str
+    account_created: bool
+    group_added: bool
+    onboarded: bool
+    message: str
+    dm_sent: bool = False
+    dm_error: Optional[str] = None
 
 
 class PersonUpdate(BaseModel):

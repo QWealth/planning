@@ -29,6 +29,12 @@
  *    back-end engineer who is handy with CSS has the front-end skill and is not UX.
  *    The two controls are shaped differently on purpose; see the note above Roles.
  *
+ * 5. A specialisation is TWO answers on one row: three stars for what somebody can do
+ *    today, and a checkbox for whether they want the work. They are independent -
+ *    a three-star engineer can still want more of it, and a zero-star one who ticks
+ *    the box is the whole reason the box exists. The scale is explained once in a
+ *    legend at the top rather than on all eleven rows. See utils/skills.ts.
+ *
  * `admin` hides the controls a plain member would be refused. It is not a check -
  * fast/app/routes/people.py enforces every one of them again, and this form would
  * still be honest if the flag arrived wrong. What it buys is that nobody presses a
@@ -51,6 +57,13 @@ import {
 import { palette, radius } from '../styles/theme';
 import { sameRoles } from '../utils/roles';
 import {
+  MAX_STARS,
+  STAR_LABELS,
+  STAR_VALUES,
+  sameSpecialisations,
+  starLabel,
+} from '../utils/skills';
+import {
   DangerButton,
   ErrorText,
   Hint,
@@ -66,13 +79,9 @@ import type {
   PersonRole,
   RoleInfo,
   SkillInfo,
-  SkillLevel,
   Specialisation,
   Unassigned,
 } from '../types';
-
-/** The three states a skill can be in on this form. `none` is not a stored value. */
-type Choice = 'none' | SkillLevel;
 
 interface FormValues {
   email: string;
@@ -84,32 +93,18 @@ interface FormValues {
    */
   roles: string[];
   active: boolean;
-  /** skill value -> choice. Every skill in the vocabulary is present, most as 'none'. */
-  levels: Record<string, Choice>;
+  /**
+   * skill value -> "0".."3". Strings, because a radio group's value is a string and
+   * asking React Hook Form to coerce would leave the one uncoerced path - a group
+   * with nothing selected - reading back as NaN rather than as zero.
+   *
+   * Every skill in the vocabulary has a key, so an untouched skill is an explicit
+   * "0" rather than an absent field that reads back as undefined.
+   */
+  stars: Record<string, string>;
+  /** skill value -> whether they want this work. Independent of the stars. */
+  learn: Record<string, boolean>;
 }
-
-/**
- * The four answers, in the order they are offered.
- *
- * Capability ascending - No, slowly, yes - and then the one that is not on that
- * scale at all. "No, but wants to learn" reads as a footnote to "No" and belongs
- * next to it in meaning, but putting it second would break the ramp the three fills
- * depend on, so it goes last where it reads as the special case it is.
- *
- * `none` is a UI-only value: choosing it stores no entry rather than storing a "no".
- * The roster is a list of what people CAN do, and a row per person per skill they
- * cannot do would be ten times the data to say nothing.
- */
-const CHOICES: { value: Choice; label: string; hint: string }[] = [
-  { value: 'none', label: 'No', hint: 'Not one of their areas' },
-  { value: 'secondary', label: 'Yes, but slowly', hint: 'Can do it; it will take longer' },
-  { value: 'primary', label: 'Yes', hint: 'The obvious person for this' },
-  {
-    value: 'learning',
-    label: 'No, but wants to learn',
-    hint: 'Not yet - but wants to be given this work',
-  },
-];
 
 /*
   Two columns, not three. It was three when Manager sat beside Email and Name; with
@@ -154,11 +149,11 @@ const CheckLabel = styled.label`
 /*
   ROLES LOOK DELIBERATELY UNLIKE SKILLS, AND THAT IS THE WHOLE POINT OF THESE RULES.
 
-  The skill control below is a segmented pill: four options welded together, one of
-  which is always filled. That shape says "pick exactly one", and it says it whether
-  or not it is true. Roles are multi-select - a BA who also does UX ticks both - so
-  reusing that control would make the form quietly lie about what it accepts, and the
-  BA would tick UX and watch BA switch itself off.
+  The skill control below is a star rating: one value on a scale, always exactly one.
+  That shape says "how much", and it says it whether or not it is true. Roles are
+  multi-select and unordered - a BA who also does UX ticks both, and neither is more
+  BA than the other - so reusing that control would make the form quietly lie about
+  what it accepts, and the BA would pick UX and watch BA switch itself off.
 
   So: separate chips with gaps between them, and a check mark on the selected ones.
   Detached things that each turn on and off independently, which is what they are.
@@ -241,20 +236,56 @@ const SkillsLegend = styled.legend`
 `;
 
 /*
-  The track minimum is set by the WIDEST SEGMENTED CONTROL, not by taste.
+  THE LEGEND, AND WHY IT IS AT THE TOP RATHER THAN ON EACH ROW.
 
-  "No, but wants to learn" is a long label, and the four segments plus a skill name do
-  not fit in the 300px this used to be. They did not wrap or scroll - Segments has
-  overflow:hidden for its rounded corners, so the row simply clipped, and on the
-  narrowest column the "No" segment was cut off the left edge entirely. An option that
-  cannot be clicked is worse than a cramped one, and nothing in the type system or the
+  Stars carry no meaning by themselves - three of them could as easily be a five-point
+  scale with two missing. The words have to be on screen somewhere, and they used to be
+  on every row, because every option was spelled out in full: "Yes", "Yes, but slowly",
+  "No, but wants to learn". Eleven skills times four labels is forty-four words of
+  chrome to read one form.
+
+  So the words are stated once, here, and the rows are stars. Each star still carries
+  its own label in a title and for screen readers, so nothing depends on having read
+  this - it is the thing you glance at once, not a key you have to keep returning to.
+*/
+const Legend = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: ${palette.inkSoft};
+`;
+
+const LegendItem = styled.span`
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+`;
+
+const LegendStars = styled.span`
+  color: ${palette.hotPink};
+  letter-spacing: 1px;
+`;
+
+/*
+  The track minimum is set by the WIDEST ROW, not by taste.
+
+  This was 460px when each row held four segments labelled in words, the longest of
+  them "No, but wants to learn". Those segments are gone - a row is now a name, three
+  stars and one checkbox - so the old minimum would strand a single column of
+  half-empty rows on any normal screen.
+
+  380px is the name at a readable width plus the controls, which do not shrink. The
+  rule the old comment was really making still stands and is the reason for a minimum
+  at all: the controls must never be what gives when the column is tight, because a
+  star clipped off the edge cannot be clicked and nothing in the type system or the
   tests can see it happen.
-
-  So: fewer columns, all four options reachable in every one of them.
 */
 const SkillGrid = styled.div`
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
   gap: 6px 18px;
 `;
 
@@ -275,76 +306,47 @@ const SkillName = styled.span`
 `;
 
 /*
-  A segmented control built from real radios: the input is visually hidden and the
-  label is the button. Keyboard behaviour - arrow keys moving within the group,
-  tab skipping past it - comes free from the radio group, which a set of
-  aria-pressed buttons would have had to reimplement by hand.
+  A rating built from real radios: each input is visually hidden and its label is the
+  star. Keyboard behaviour - arrow keys moving within the group, tab skipping past it -
+  comes free from the radio group, which a row of aria-pressed buttons would have had
+  to reimplement by hand.
+
+  Never shrinks. A clipped star is one that cannot be clicked; see SkillGrid.
 */
-const Segments = styled.div`
+const Stars = styled.div`
   display: inline-flex;
-  border: 1px solid ${palette.border};
-  border-radius: ${radius.pill};
-  background: ${palette.card};
-  /* Clips the segment fills to the pill's rounded ends - and would clip the segments
-     themselves if the row ever ran out of room, so the control must never be the
-     thing that gives. */
-  overflow: hidden;
+  align-items: center;
+  gap: 1px;
   flex-shrink: 0;
 `;
 
-const Segment = styled.label<{ $on: boolean; $level: Choice }>`
-  position: relative;
-  padding: 3px 11px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  /*
-    Distinct fills, not one. An earlier version painted every selected segment the
-    same grey, so "No" and "Yes, but slowly" were indistinguishable unless you worked
-    out which cell was the filled one - on a ten-row grid that is unreadable. Grey /
-    bubblegum / hot pink is a strength ramp that differs in lightness as well as hue,
-    so it survives the colour vision deficiencies the palette header is written
-    around, and the selected word is still there to read.
+/*
+  Filled up to the chosen rating, hollow past it.
 
-    "No, but wants to learn" is deliberately NOT on that ramp. It is not a weaker yes
-    - it is a no with an intention attached, and painting it as a paler pink would
-    file it under ability, which is the one thing it is not. So it gets the blush fill
-    plus an outlined edge: marked out as different in KIND rather than placed
-    somewhere in the degree ordering. Without it a selected "learn" would have fallen
-    through to the same slate as "No", and the two would have been one mark.
-  */
-  color: ${(p) => {
-    if (!p.$on) {
-      return palette.inkSoft;
-    }
-    if (p.$level === 'primary') {
-      return '#ffffff';
-    }
-    if (p.$level === 'secondary') {
-      return '#5C1138';
-    }
-    return p.$level === 'learning' ? palette.deepMagenta : palette.ink;
-  }};
-  background: ${(p) => {
-    if (!p.$on) {
-      return 'transparent';
-    }
-    if (p.$level === 'primary') {
-      return palette.hotPink;
-    }
-    if (p.$level === 'secondary') {
-      return palette.bubblegum;
-    }
-    return p.$level === 'learning' ? palette.blush : palette.slate;
-  }};
-  /* Inset so the dashed edge does not change the segment's size and nudge the row. */
-  box-shadow: ${(p) =>
-    p.$on && p.$level === 'learning' ? `inset 0 0 0 1px ${palette.deepMagenta}` : 'none'};
-  transition: background-color 120ms ease, color 120ms ease;
+  Cumulative rather than one-of-three-marks, because that is what a star rating means
+  everywhere else and a control that looked like one but behaved like a radio strip
+  would be read wrong by everyone before it was read right by anyone. `$on` is
+  therefore "this star's value is <= the current rating", not "this star is selected".
+
+  The hollow ones stay on screen so the rating reads as two OUT OF THREE. Rendering
+  only the filled stars would also reflow the row on every click, moving the next star
+  under the cursor mid-decision.
+*/
+const Star = styled.label<{ $on: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: ${radius.sm};
+  color: ${(p) => (p.$on ? palette.hotPink : palette.borderStrong)};
+  transition: color 120ms ease, background-color 120ms ease;
 
   &:hover {
-    background: ${(p) => (p.$on ? undefined : palette.blush)};
+    background: ${palette.blush};
   }
 
   /* The ring goes on the label, because the input it belongs to is not on screen. */
@@ -354,25 +356,110 @@ const Segment = styled.label<{ $on: boolean; $level: Choice }>`
   }
 `;
 
-/** The stored list, rebuilt from the form. Sorted so two lists compare by value. */
-export function buildSpecialisations(levels: Record<string, Choice>): Specialisation[] {
-  return Object.entries(levels)
-    .filter((entry): entry is [string, SkillLevel] => entry[1] !== 'none')
-    .map(([skill, level]) => ({ skill, level }))
-    .sort((a, b) => a.skill.localeCompare(b.skill));
-}
+/*
+  Clearing the rating back to nothing.
 
-/** True when the two lists describe the same set of skills at the same levels. */
-export function sameSpecialisations(a: Specialisation[], b: Specialisation[]): boolean {
-  if (a.length !== b.length) {
-    return false;
+  A star rating built from radios has no way to un-pick the last choice, and without
+  this a mis-clicked star is permanent for the life of the form - the only way back to
+  "not one of their areas" would be to cancel and reopen. It is the fourth radio in the
+  group, value "0", so it is reachable by arrow key like the rest.
+
+  Deliberately quiet and to the LEFT of the stars, where it reads as the bottom of the
+  scale rather than as a delete button sitting at the end of the row.
+*/
+const ClearStars = styled.label<{ $on: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 22px;
+  margin-right: 3px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: ${radius.sm};
+  color: ${(p) => (p.$on ? palette.ink : palette.border)};
+  background: ${(p) => (p.$on ? palette.slate : 'transparent')};
+
+  &:hover {
+    background: ${palette.blush};
+    color: ${palette.ink};
   }
-  const key = (list: Specialisation[]) =>
-    [...list]
-      .sort((x, y) => x.skill.localeCompare(y.skill))
-      .map((s) => `${s.skill}:${s.level}`)
-      .join('|');
-  return key(a) === key(b);
+
+  &:has(input:focus-visible) {
+    outline: 2px solid ${palette.hotPink};
+    outline-offset: -2px;
+  }
+`;
+
+/*
+  Appetite, not ability, and shaped so it cannot be mistaken for a fourth star.
+
+  This used to be the last segment of the rating control, labelled "No, but wants to
+  learn", which put it on the capability scale while every comment in the codebase
+  insisted it was not on one. A checkbox beside the stars says the same thing without
+  the argument: it is a separate question, and it can be ticked at any rating.
+*/
+const LearnBox = styled.label<{ $on: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 2px 8px 2px 5px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  border-radius: ${radius.pill};
+  border: 1px dashed ${(p) => (p.$on ? palette.deepMagenta : 'transparent')};
+  color: ${(p) => (p.$on ? palette.deepMagenta : palette.inkSoft)};
+
+  &:hover {
+    border-color: ${palette.deepMagenta};
+  }
+
+  &:has(input:focus-visible) {
+    outline: 2px solid ${palette.hotPink};
+    outline-offset: 1px;
+  }
+
+  /*
+   * The tick stays a native checkbox on purpose - it is the one control here whose
+   * default rendering is already the right shape, and a hand-drawn replacement would
+   * have to re-earn the keyboard and screen-reader behaviour it gets for free. Only
+   * the colour is overridden: unstyled it fills system blue, the single non-pink
+   * thing on the page, which reads as a bug rather than a choice.
+   */
+  input {
+    accent-color: ${palette.deepMagenta};
+    margin: 0;
+    cursor: pointer;
+  }
+`;
+
+/**
+ * The stored list, rebuilt from the form. Sorted so two lists compare by value.
+ *
+ * An entry survives if it says something: at least one star, or the box ticked. A
+ * skill at zero stars that nobody wants to learn is dropped rather than sent, which
+ * is the same rule the API enforces - see SpecialisationIn.must_say_something. The
+ * roster is a list of what people can do or want to do, and storing eleven "no"s per
+ * person would be ten times the data to say nothing.
+ */
+export function buildSpecialisations(
+  stars: Record<string, string>,
+  learn: Record<string, boolean>
+): Specialisation[] {
+  return Object.keys(stars)
+    .map((skill) => ({
+      skill,
+      // Radios hand back strings, and a group with nothing chosen hands back
+      // undefined. Both land on zero rather than NaN.
+      stars: Number(stars[skill] ?? 0) || 0,
+      wants_to_learn: Boolean(learn?.[skill]),
+    }))
+    .filter((s) => s.stars > 0 || s.wants_to_learn)
+    .sort((a, b) => a.skill.localeCompare(b.skill));
 }
 
 interface PersonEditorProps {
@@ -410,7 +497,13 @@ interface PersonEditorProps {
   onSaved: (saved: Person) => void;
   /** Absent means the person cannot be deleted from here, only edited. */
   onDeleted?: (email: string, unassigned: Unassigned) => void;
-  onCancel: () => void;
+  /**
+   * Absent means there is nowhere to go back to, and no Cancel button is drawn.
+   *
+   * The onboarding screen is the case: it is the whole page, it is deliberately a
+   * gate, and a Cancel wired to a no-op would be a button that visibly does nothing.
+   */
+  onCancel?: () => void;
 }
 
 export default function PersonEditor({
@@ -444,20 +537,32 @@ export default function PersonEditor({
       // note beside the chips below for why those are shown rather than dropped.
       roles: existingRoles,
       active: person?.active ?? true,
-      // Every skill gets a key, so an untouched skill is an explicit 'none' rather
-      // than an absent field that would read back as undefined.
-      levels: Object.fromEntries(
-        skills.map((s) => [s.skill, existing.find((e) => e.skill === s.skill)?.level ?? 'none'])
-      ) as Record<string, Choice>,
+      // Every skill gets a key in both maps, so an untouched skill is an explicit
+      // "0"/false rather than an absent field that would read back as undefined.
+      // Keying off `skills` and not off what is stored also means a skill added to
+      // the vocabulary appears on the form for people who predate it.
+      stars: Object.fromEntries(
+        skills.map((s) => [
+          s.skill,
+          String(existing.find((e) => e.skill === s.skill)?.stars ?? 0),
+        ])
+      ),
+      learn: Object.fromEntries(
+        skills.map((s) => [
+          s.skill,
+          Boolean(existing.find((e) => e.skill === s.skill)?.wants_to_learn),
+        ])
+      ),
     },
   });
 
-  const levels = watch('levels');
+  const stars = watch('stars');
+  const learn = watch('learn');
   const chosenRoles = watch('roles') ?? [];
 
   const onSubmit = handleSubmit(async (values) => {
     setError(null);
-    const specialisations = buildSpecialisations(values.levels);
+    const specialisations = buildSpecialisations(values.stars, values.learn);
     // Asserting what the server just told us, not guessing: every value here came out
     // of the catalogue this component was handed by GET /api/roles, and the API
     // validates the closed list again on arrival.
@@ -497,7 +602,9 @@ export default function PersonEditor({
         patch.specialisations = specialisations;
       }
       if (Object.keys(patch).length === 0) {
-        onCancel();
+        // Nothing changed, so close rather than write. Unreachable without a Cancel
+        // handler - this branch is edit-only and onboarding always creates.
+        onCancel?.();
         return;
       }
       onSaved(await patchPerson(person.email, patch));
@@ -590,11 +697,11 @@ export default function PersonEditor({
       </Label>
 
       <Label>
-        Name
+        Name (or alias)
         <Input
           {...register('name', { required: 'A name is needed.', maxLength: 120 })}
           aria-invalid={Boolean(errors.name)}
-          placeholder="Full name"
+          placeholder="Name or alias"
         />
       </Label>
 
@@ -642,61 +749,87 @@ export default function PersonEditor({
               </RoleChip>
             ))}
         </RoleChoices>
-        <FullRow>
-          <Hint>
-            {errors.roles ? (
-              <ErrorText role="alert">{errors.roles.message}</ErrorText>
-            ) : (
-              <>
-                What you do, not what you can be assigned to &mdash; tick as many as
-                apply. Specialisations below are the separate question of what work you
-                could take.
-              </>
-            )}
-          </Hint>
-        </FullRow>
+        {/* The explanatory sentence that used to live here was removed as clutter -
+            the legend already says "pick at least one", and the distinction it drew
+            between a role and a specialisation is made by the two controls looking
+            nothing alike. Only the validation message survives, which is the half
+            that was ever load-bearing. */}
+        {errors.roles ? (
+          <FullRow>
+            <ErrorText role="alert">{errors.roles.message}</ErrorText>
+          </FullRow>
+        ) : null}
       </Roles>
 
       <Skills>
         <SkillsLegend>Specialisations</SkillsLegend>
+        {/* Stated once, at the top, instead of on all eleven rows. See Legend above. */}
+        <Legend aria-hidden="true">
+          {STAR_VALUES.map((value) => (
+            <LegendItem key={value}>
+              <LegendStars>
+                {'★'.repeat(value)}
+                {'☆'.repeat(MAX_STARS - value)}
+              </LegendStars>
+              {STAR_LABELS[value]}
+            </LegendItem>
+          ))}
+        </Legend>
         <SkillGrid>
-          {skills.map((skill) => (
-            <SkillRow key={skill.skill}>
-              <SkillName title={skill.description}>{skill.label}</SkillName>
-              <Segments role="group" aria-label={skill.label}>
-                {CHOICES.map((choice) => {
-                  const on = (levels?.[skill.skill] ?? 'none') === choice.value;
-                  return (
-                    <Segment
-                      key={choice.value}
-                      $on={on}
-                      $level={choice.value}
-                      title={`${skill.label}: ${choice.hint}`}
+          {skills.map((skill) => {
+            const rating = Number(stars?.[skill.skill] ?? 0) || 0;
+            const wants = Boolean(learn?.[skill.skill]);
+            return (
+              <SkillRow key={skill.skill}>
+                <SkillName title={skill.description}>{skill.label}</SkillName>
+                {/* radiogroup, not group: four radios where exactly one is chosen.
+                    The accessible name has to carry the skill, because the stars
+                    themselves are identical on every row. */}
+                <Stars role="radiogroup" aria-label={`${skill.label} — rating`}>
+                  <ClearStars $on={rating === 0} title={`${skill.label}: ${starLabel(0)}`}>
+                    <span aria-hidden="true">✕</span>
+                    <VisuallyHidden as="span">
+                      {skill.label} — {starLabel(0)}
+                    </VisuallyHidden>
+                    <VisuallyHidden
+                      as="input"
+                      type="radio"
+                      value="0"
+                      {...register(`stars.${skill.skill}` as const)}
+                    />
+                  </ClearStars>
+                  {STAR_VALUES.map((value) => (
+                    <Star
+                      key={value}
+                      // Cumulative: every star up to the rating is filled, which is
+                      // what a star rating means. Not "this one is the selected radio".
+                      $on={value <= rating}
+                      title={`${skill.label}: ${starLabel(value)}`}
                     >
-                      <VisuallyHidden as="span">{skill.label} — </VisuallyHidden>
-                      {choice.label}
+                      <span aria-hidden="true">{value <= rating ? '★' : '☆'}</span>
+                      <VisuallyHidden as="span">
+                        {skill.label} — {value} of {MAX_STARS}, {starLabel(value)}
+                      </VisuallyHidden>
                       <VisuallyHidden
                         as="input"
                         type="radio"
-                        value={choice.value}
-                        {...register(`levels.${skill.skill}` as const)}
+                        value={String(value)}
+                        {...register(`stars.${skill.skill}` as const)}
                       />
-                    </Segment>
-                  );
-                })}
-              </Segments>
-            </SkillRow>
-          ))}
+                    </Star>
+                  ))}
+                </Stars>
+                <LearnBox
+                  $on={wants}
+                  title={`${skill.label}: wants to be given this work`}
+                >
+                  <input type="checkbox" {...register(`learn.${skill.skill}` as const)} />
+                  Wants to learn
+                </LearnBox>
+              </SkillRow>
+            );
+          })}
         </SkillGrid>
-        <FullRow>
-          <Hint>
-            &ldquo;Yes&rdquo; is the obvious person for the job; &ldquo;yes, but slowly&rdquo; is
-            who to fall back on. &ldquo;Wants to learn&rdquo; is not a weaker yes &mdash; it
-            says they cannot do it today and would like the work anyway, and they will
-            show up when you go looking for who could take something. There is no numeric
-            scale on purpose.
-          </Hint>
-        </FullRow>
       </Skills>
 
       <Actions>
@@ -744,9 +877,11 @@ export default function PersonEditor({
                 Delete
               </SecondaryButton>
             ) : null}
-            <SecondaryButton type="button" onClick={onCancel} disabled={disabled}>
-              Cancel
-            </SecondaryButton>
+            {onCancel ? (
+              <SecondaryButton type="button" onClick={onCancel} disabled={disabled}>
+                Cancel
+              </SecondaryButton>
+            ) : null}
             <PrimaryButton type="submit" disabled={disabled}>
               {isSubmitting ? 'Saving…' : person ? 'Save person' : 'Add to roster'}
             </PrimaryButton>

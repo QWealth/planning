@@ -53,6 +53,7 @@ import {
   LaneName,
   LaneRow,
   MilestonePin,
+  MoveButton,
   PhaseLabelCell,
   PhaseName,
   PhaseRow,
@@ -110,6 +111,13 @@ const SupportChip = styled(Chip)`
   background: rgba(180, 162, 172, 0.12);
 `;
 
+/** Move controls for this lane, or null when the roadmap is not being reordered. */
+export interface LaneMove {
+  onMove: (delta: -1 | 1) => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+}
+
 export interface LaneProps {
   project: Project;
   grid: Grid;
@@ -117,8 +125,18 @@ export interface LaneProps {
   today: string;
   expanded: boolean;
   onToggle: () => void;
+  /**
+   * Present only while reordering, and it replaces Edit rather than joining it.
+   *
+   * Both in the same cell would not fit - 264px, minus the disclosure, minus a name
+   * that already ellipsises - and they are anyway two different jobs: reordering is a
+   * mode you turn on to arrange the board, and opening an editor mid-rearrangement
+   * puts a form under a row that is about to move out from under it.
+   */
+  move?: LaneMove | null;
   /** Upsert on phase_id: the same callback carries an edit and a newly added phase. */
   onPhaseSaved: (phase: Phase) => void;
+  onPhaseDeleted: (projectId: string, phaseId: string) => void;
   /** Upsert on milestone_id, for the same reason. */
   onMilestoneSaved: (milestone: Milestone) => void;
   onMilestoneDeleted: (projectId: string, milestoneId: string) => void;
@@ -132,7 +150,9 @@ export default function Lane({
   today,
   expanded,
   onToggle,
+  move,
   onPhaseSaved,
+  onPhaseDeleted,
   onMilestoneSaved,
   onMilestoneDeleted,
   onProjectSaved,
@@ -241,9 +261,33 @@ export default function Lane({
               {describeVerdict(verdict)} · {owners}
             </SubLabel>
           </Stack>
-          <EditButton type="button" onClick={() => setEditingProject((open) => !open)}>
-            Edit
-          </EditButton>
+          {move ? (
+            <>
+              {/* Named after the project, not after the direction. Nine lanes each
+                  offering "Move up" gives a screen reader nine identical controls and
+                  no way to tell which row it is on. */}
+              <MoveButton
+                type="button"
+                onClick={() => move.onMove(-1)}
+                disabled={!move.canMoveUp}
+                aria-label={`Move ${project.name} up`}
+              >
+                &#9650;
+              </MoveButton>
+              <MoveButton
+                type="button"
+                onClick={() => move.onMove(1)}
+                disabled={!move.canMoveDown}
+                aria-label={`Move ${project.name} down`}
+              >
+                &#9660;
+              </MoveButton>
+            </>
+          ) : (
+            <EditButton type="button" onClick={() => setEditingProject((open) => !open)}>
+              Edit
+            </EditButton>
+          )}
         </LaneLabelCell>
 
         <Track>
@@ -283,7 +327,15 @@ export default function Lane({
         </Track>
       </LaneRow>
 
-      {editingProject ? (
+      {/* Not rendered while reordering. The form is bound to a lane that is currently
+          sliding up and down the board, and leaving it on screen would put its Save
+          button under a different project each time the row moved.
+          `editingProject` is left true, so the editor reopens when the mode ends -
+          but unmounting discards the react-hook-form state, so it reopens showing the
+          stored values rather than anything half-typed. That is the honest outcome:
+          the alternative is a form that silently looks dirty against a row nobody
+          edited. */}
+      {editingProject && !move ? (
         <EditorRow>
           <ProjectEditor
             project={project}
@@ -354,6 +406,13 @@ export default function Lane({
                       onSaved={(saved) => {
                         onPhaseSaved(saved);
                         setEditingPhaseId(null);
+                      }}
+                      onDeleted={(projectId, phaseId) => {
+                        // Close the editor first: it is rendered under the row for
+                        // the phase that just stopped existing, and leaving it open
+                        // would strand a form editing nothing.
+                        setEditingPhaseId(null);
+                        onPhaseDeleted(projectId, phaseId);
                       }}
                     />
                   </EditorRow>

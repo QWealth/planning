@@ -248,6 +248,112 @@ def require_admin(request: Request) -> str:
     return email
 
 
+def _iam_caller_arn(request: Request) -> Optional[str]:
+    """
+    The IAM principal API Gateway proved, on a route using IAM authorization.
+
+    A different field from the Cognito claims above, populated by a different
+    authorizer, and the two never both appear: `/api/service/*` is IAM-authorized and
+    everything else is Cognito-authorized. `userArn` is filled in by API Gateway from
+    the SigV4 signature it has already verified, so reaching this code at all means
+    the signature was valid and the principal held execute-api:Invoke on the route.
+    """
+    event = request.scope.get("aws.event") or {}
+    identity = event.get("requestContext", {}).get("identity") or {}
+    arn = identity.get("userArn")
+    return str(arn) if arn else None
+
+
+def require_service_caller(request: Request) -> str:
+    """
+    FastAPI dependency: an allowlisted machine, or the request is refused.
+
+    THE ONLY NON-COGNITO WAY INTO THIS API, and it is deliberately unreachable from
+    every route except /api/service/*. Read the module docstring above: the identity
+    half of this file is otherwise untouched, because a second implementation of "who
+    are you" is the usual way an auth check becomes decorative.
+
+    What makes this safe is that it is not a weaker check, it is a different one:
+
+      - API Gateway verifies the SigV4 signature before Lambda runs, exactly as it
+        verifies the JWT on the human routes. Neither is re-implemented here.
+      - The caller must additionally be named in config.SERVICE_CALLER_ARNS. An empty
+        allowlist refuses everybody, so this fails CLOSED - a missing environment
+        variable costs the Slack command and grants nothing.
+      - It returns a label, never an email, so nothing downstream can mistake a
+        machine for a person. `same_person` will not match it and the audit trail
+        reads "service:..." rather than an address nobody actually typed.
+
+    Note the assumed-role shape. An ECS task signs as
+    arn:aws:sts::<acct>:assumed-role/<RoleName>/<taskId>, where the task id changes on
+    every deployment, so the allowlist is compared on the role portion rather than the
+    whole string - otherwise this would break the first time the service restarted.
+    """
+    arn = _iam_caller_arn(request)
+
+    if arn is None:
+        # Keyed on the ABSENCE of a signature, exactly as get_user_email above is
+        # keyed on the absence of claims, and for the same reason: running under
+        # plain uvicorn there is no API Gateway to produce either. This is what lets
+        # the Slack bot be pointed at demo.py and exercised end to end against a
+        # moto Cognito pool, which is the only way to get the command wrong for free.
+        #
+        # It cannot grant anything deployed. Reaching Lambda at all means API Gateway
+        # authorized the request, which on this route means a valid SigV4 signature
+        # from a principal holding execute-api:Invoke - so `arn` is populated and this
+        # branch is not taken.
+        if DEV_AUTH_BYPASS:
+            logger.warning("DEV_AUTH_BYPASS: serving a service route with no signature.")
+            return "service:dev-bypass"
+
+        logger.warning("Service route reached with no IAM caller identity.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated.",
+        )
+
+    if not _arn_is_allowed(arn):
+        logger.warning("Refused service caller %s: not in SERVICE_CALLER_ARNS.", arn)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This principal is not permitted to call the service API.",
+        )
+
+    return f"service:{_role_name(arn)}"
+
+
+def _role_name(arn: str) -> str:
+    """
+    The role out of an ARN, whether it arrived assumed or not.
+
+    arn:aws:sts::123:assumed-role/AardvarkTaskRole/abc123 -> AardvarkTaskRole
+    arn:aws:iam::123:role/AardvarkTaskRole                 -> AardvarkTaskRole
+
+    Falls back to the whole ARN rather than raising, so an unfamiliar principal shape
+    is compared verbatim and refused by the allowlist instead of crashing the route.
+    """
+    for marker in ("assumed-role/", ":role/"):
+        if marker in arn:
+            tail = arn.split(marker, 1)[1]
+            return tail.split("/", 1)[0]
+    return arn
+
+
+def _arn_is_allowed(arn: str) -> bool:
+    """
+    Whether this principal is allowlisted, by role rather than by session.
+
+    Compared on the role name because the session suffix of an assumed-role ARN is a
+    new random string on every ECS task, so an exact match would work until the
+    service was next redeployed and then fail in a way nobody would connect to the
+    deploy. Entries may be written either shape; both are reduced to the role first.
+    """
+    if not config.SERVICE_CALLER_ARNS:
+        return False
+    caller = _role_name(arn)
+    return any(caller == _role_name(allowed) for allowed in config.SERVICE_CALLER_ARNS)
+
+
 def same_person(a: Optional[str], b: Optional[str]) -> bool:
     """
     Whether two addresses are the same person.

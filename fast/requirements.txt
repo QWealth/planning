@@ -8,3 +8,9 @@ pydantic==2.10.0
 email-validator==2.2.0
 boto3==1.34.0
 mangum==0.17.0
+# Slack's Web API, for the invite picker (app/slack.py). Declared explicitly for the
+# same reason as email-validator above: httpx is already in the local venv as a
+# dependency of Starlette's TestClient, so importing it passes the tests whether or
+# not it is listed here - but the Dockerfile installs ONLY this file, so relying on
+# that would build an image that fails at import time in Lambda and nowhere else.
+httpx==0.27.2

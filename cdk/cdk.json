@@ -57,6 +57,42 @@
       "anyway for the case that does cross origins: a Vite dev server on :5173",
       "calling the deployed API directly."
     ],
-    "cors_origins": "https://planning.qconnect.qwnext.com,http://localhost:5173,http://localhost:3000"
+    "cors_origins": "https://planning.qconnect.qwnext.com,http://localhost:5173,http://localhost:3000",
+
+    "_service_caller_comment": [
+      "IAM roles allowed to call /api/service/*, which is the ONLY door into this API",
+      "that is not a signed-in human. Today that is the Aardvark Aap Slack bot, whose",
+      "/roadmap-invite command creates logins on the Cognito pool SHARED with the",
+      "marketing compliance tool.",
+      "",
+      "That command is gated by Aardvark's OWN admin list, in its MySQL `admins`",
+      "table - not by the `admin` Cognito group this app uses everywhere else. So",
+      "this line delegates account creation to a permission set maintained in another",
+      "system, and it is written out here so that decision is reviewable in this repo",
+      "rather than only in Aardvark's CDK.",
+      "",
+      "Matched on the ROLE, so the assumed-role session suffix ECS regenerates on",
+      "every task does not matter. Empty or absent closes the door entirely.",
+      "",
+      "The matching grant - execute-api:Invoke - lives in aardvarkaap/lib/",
+      "aardvark-app-stack.ts. Both sides are required; neither alone does anything."
+    ],
+    "service_caller_arns": "arn:aws:iam::778983355679:role/aardvark-app-task-role",
+
+    "_slack_comment": [
+      "Aardvark Aap's Slack credentials, read by the invite picker on the Team page.",
+      "SHARED with Aardvark rather than copied: one Slack app, one bot token, rotated",
+      "in one place. The consequence is that a DM sent by this app appears to come",
+      "from Aardvark, which matches its own /roadmap-invite command.",
+      "",
+      "This app is granted GetSecretValue on this ONE secret and nothing else - see",
+      "lib/lambda_stack.py, which also explains the -?????? suffix every Secrets",
+      "Manager ARN carries. The token is never put in a Lambda environment variable.",
+      "",
+      "The Slack app needs users:read, users:read.email and chat:write, and must be",
+      "REINSTALLED to the workspace after any scope is added. Set this to \"\" to turn",
+      "the picker off; inviting by typed address keeps working either way."
+    ],
+    "slack_secret_name": "aardvark-app/slack"
   }
 }

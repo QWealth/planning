@@ -91,6 +91,14 @@ def create_tables(ddb) -> None:
     )
 
 
+def _fake_pool(group: str) -> str:
+    """An in-memory user pool with the planning group already in it."""
+    idp = boto3.client("cognito-idp", region_name=REGION)
+    pool_id = idp.create_user_pool(PoolName="demo-planning-pool")["UserPool"]["Id"]
+    idp.create_group(GroupName=group, UserPoolId=pool_id)
+    return pool_id
+
+
 def main() -> None:
     roadmap_path = HERE.parent / "roadmap.json"
     if not roadmap_path.exists():
@@ -103,7 +111,7 @@ def main() -> None:
         ddb = boto3.resource("dynamodb", region_name=REGION)
         create_tables(ddb)
 
-        from app import auth, config
+        from app import auth, cognito, config
         from app.db.queries import audit, people, projects
         from app.seeds.load_roadmap import load, plan, resolve_people
 
@@ -132,6 +140,15 @@ def main() -> None:
         # account, and inventing roster rows for it would put a fictional person in
         # the seeded data. Point this at a seeded address to act as somebody real.
         auth.DEV_USER_EMAIL = os.environ.get("DEV_USER_EMAIL") or "demo@example.invalid"
+
+        # A throwaway Cognito pool, so "Invite somebody" is clickable here.
+        #
+        # Worth the eight lines: the real endpoint writes to the pool SHARED with the
+        # marketing compliance tool, and a wrong first attempt there does not fail
+        # quietly - it creates an account a colleague gets an email about. This gives
+        # the whole flow somewhere to be wrong for free.
+        config.COGNITO_USER_POOL_ID = _fake_pool(config.REQUIRED_GROUP)
+        cognito.cognito = boto3.client("cognito-idp", region_name=REGION)
 
         with open(roadmap_path) as fh:
             roadmap = json.load(fh)

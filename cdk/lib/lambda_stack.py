@@ -32,6 +32,9 @@ class LambdaStack(cdk.Stack):
         admin_group: str,
         cors_origins: str,
         require_auth: bool = True,
+        app_url: str = "",
+        service_caller_arns: str = "",
+        slack_secret_name: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -54,9 +57,69 @@ class LambdaStack(cdk.Stack):
         for table in (projects_table, people_table, audit_table):
             table.grant_read_write_data(lambda_role)
 
-        # Nothing else. No Bedrock, no Cognito admin verbs: this API never creates a
-        # user (the pool is populated by the compliance tool's invite flow) and never
-        # calls a model. An unused grant is a standing invitation.
+        # Four Cognito admin verbs, and no more.
+        #
+        # This used to say "no Cognito admin verbs at all", on the grounds that the
+        # pool was populated by the compliance tool's invite flow. It no longer is:
+        # POST /api/people/invite creates the login here, because asking an admin to
+        # go and use a different app to grant access to this one was the reason
+        # nobody got access. See fast/app/cognito.py.
+        #
+        # Scoped to this one pool's ARN rather than "*". The pool is IMPORTED, not
+        # owned by this stack (cognito_stack.py), and it is shared with the marketing
+        # compliance tool - so a wildcard here would be a grant over somebody else's
+        # production identity store, handed out by a stack that has no business
+        # touching it.
+        #
+        # AdminCreateUser and AdminAddUserToGroup are the write half. The two reads
+        # are not padding: ListGroupsForUser is what makes an invite idempotent
+        # instead of a blind write, and GetUser answers "does this person already
+        # have a login" - which is the first question asked when an invite fails.
+        #
+        # Notably absent, and to stay absent: AdminDeleteUser, AdminSetUserPassword,
+        # AdminRemoveUserFromGroup, AdminUpdateUserAttributes. Nothing in this app
+        # revokes or reassigns a login, and on a shared pool the blast radius of a
+        # bug in code that could would reach the compliance tool's users.
+        lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "cognito-idp:AdminCreateUser",
+                    "cognito-idp:AdminAddUserToGroup",
+                    "cognito-idp:AdminListGroupsForUser",
+                    "cognito-idp:AdminGetUser",
+                ],
+                resources=[user_pool.user_pool_arn],
+            )
+        )
+
+        # Read the Slack bot token, and nothing else in Secrets Manager.
+        #
+        # The secret belongs to Aardvark Aap and is SHARED rather than copied: one
+        # Slack app, one token, rotated in one place. Copying it would produce a second
+        # value that looks identical until the day the first is revoked.
+        #
+        # GetSecretValue only - no write, no rotation, no list. And scoped to this one
+        # secret's ARN with a six-character suffix wildcard, because Secrets Manager
+        # appends a random suffix to every ARN and a policy written without it matches
+        # nothing at all. Broadening to "*" would be a grant over every secret in the
+        # account, including the RDS and Redshift credentials that live beside it.
+        #
+        # The token is deliberately NOT passed as an environment variable: anything in
+        # a Lambda's environment is readable with lambda:GetFunctionConfiguration, which
+        # is a far wider audience than those who can read a secret. See app/slack.py.
+        # Skipped entirely when no secret is named, rather than granted over an ARN
+        # built from an empty string - which would deploy a statement matching nothing
+        # and read, to anybody auditing it later, as though access had been intended.
+        if slack_secret_name:
+            lambda_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["secretsmanager:GetSecretValue"],
+                    resources=[
+                        f"arn:aws:secretsmanager:{self.region}:{self.account}"
+                        f":secret:{slack_secret_name}-??????"
+                    ],
+                )
+            )
 
         # The platform must be pinned. Without it Docker builds for the host, so a
         # deploy from an Apple Silicon machine produces an arm64 image; if the
@@ -107,6 +170,17 @@ class LambdaStack(cdk.Stack):
                 # the _group_comment in cdk.json.
                 "ADMIN_GROUP": admin_group,
                 "CORS_ORIGINS": cors_origins,
+                # The link inside an invitation. Not derived from the request: an
+                # invite is composed server-side precisely so that whoever triggers it
+                # - the Team page or the Slack bot - sends the same, correct address.
+                "APP_URL": app_url,
+                # Who may use the IAM-authorized /api/service/* door. Empty deploys a
+                # closed door, which is the right way for this to be misconfigured.
+                "SERVICE_CALLER_ARNS": service_caller_arns,
+                # WHERE the Slack token is, never the token itself. Empty disables the
+                # invite picker and the DM; invites still work by typed address, which
+                # is what the app did before Slack was involved at all.
+                "SLACK_SECRET_NAME": slack_secret_name,
                 "LOG_LEVEL": "INFO",
                 # Deliberately absent: DEV_AUTH_BYPASS, and DEV_ADMIN with it. app/auth.py
                 # honours both, and setting either here would make every request appear to
@@ -182,6 +256,27 @@ class LambdaStack(cdk.Stack):
         api_resource.add_method("ANY", lambda_integration, **method_options)
         api_resource.add_resource("{proxy+}").add_method(
             "ANY", lambda_integration, **method_options
+        )
+
+        # /api/service/* is authorized by IAM instead of Cognito, for the Aardvark Aap
+        # Slack bot - an ECS task in this account, which has no Cognito token and
+        # cannot get one. See fast/app/routes/service.py.
+        #
+        # A method carries exactly one authorizer, so this could not be a flag on
+        # /api/people/invite; it had to be a second path. And declaring a literal
+        # "service" child is precisely the trap described above: it beats the
+        # /api/{proxy+} sibling for /api/service/anything, so WITHOUT its own
+        # {proxy+} below, /api/service/invite would resolve to nothing at all - a
+        # 403 in the deployed environment that looks like an auth bug and is not.
+        #
+        # IAM regardless of `require_auth`. That flag turning the Cognito authorizer
+        # off is a deliberate local-ish posture for the human routes; it is not a
+        # reason to expose a door that writes to the shared pool.
+        service_options = {"authorization_type": apigateway.AuthorizationType.IAM}
+        service_resource = api_resource.add_resource("service")
+        service_resource.add_method("ANY", lambda_integration, **service_options)
+        service_resource.add_resource("{proxy+}").add_method(
+            "ANY", lambda_integration, **service_options
         )
 
         # /, /docs, /openapi.json and anything else FastAPI serves. Authorized on

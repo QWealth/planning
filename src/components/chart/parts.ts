@@ -340,6 +340,57 @@ export const EditButton = styled.button`
   }
 `;
 
+/**
+ * Move up / move down, shown in place of Edit while the roadmap is being reordered.
+ *
+ * Always visible, unlike EditButton, and for the same reason AddButton is: the hover
+ * reveal is right for an affordance that would otherwise be noise on every one of nine
+ * lanes, and wrong for the only control that does anything in a mode you deliberately
+ * turned on. Reordering also means clicking the same lane repeatedly, and a button
+ * that appears on hover is a button that flickers as the row it belongs to slides out
+ * from under the pointer.
+ *
+ * Square and glyph-only to fit the label cell, which is 264px and already spends most
+ * of it on the disclosure and the project name. The accessible name comes from an
+ * aria-label naming the project - "Move Client Portal up" - because "▲" is not a name
+ * and nine identical ones are not distinguishable.
+ */
+export const MoveButton = styled.button`
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-family: ${fontStack};
+  font-size: 10px;
+  line-height: 1;
+  color: ${palette.deepMagenta};
+  background: ${palette.card};
+  border: 1px solid ${palette.border};
+  border-radius: ${radius.sm};
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+
+  &:hover:not(:disabled) {
+    background: ${palette.blush};
+    border-color: ${palette.hotPink};
+  }
+
+  /* Kept in the layout rather than removed at the ends of the list, so the label
+     column does not reflow by 30px as a lane passes the top or the bottom. */
+  &:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
+
+  &:focus-visible {
+    outline: 2px solid ${palette.hotPink};
+    outline-offset: 2px;
+  }
+`;
+
 /** Row that spans both columns, for an open editor. */
 export const EditorRow = styled.div`
   border-bottom: 1px solid ${palette.border};

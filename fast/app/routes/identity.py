@@ -9,8 +9,22 @@ this endpoint gives the answer that actually governs requests.
 Deliberately NOT behind require_planning_group. A user who is refused everything
 else still needs to be told why, and a 403 from /api/me would leave the login screen
 unable to distinguish "wrong group" from "server down".
+
+IT ALSO ANSWERS "HAVE YOU FINISHED SIGNING UP"
+----------------------------------------------
+A login and a roster row are separate things (routes/people.py, create_person), and
+an invite creates only the first (app/cognito.py). So an invited colleague's first
+sign-in lands them somewhere the app has never had to handle before: authorised for
+every endpoint, and unknown to every list of people. `onboarded` names that state so
+the frontend can send them to the onboarding form instead of a roadmap where they
+cannot be assigned anything and do not appear on the Team page.
+
+It belongs here rather than in a second endpoint because the browser already blocks
+on /api/me before rendering anything, and a separate call would mean a second round
+trip that can only ever be made at the same moment as this one.
 """
 
+import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, Request
@@ -18,6 +32,9 @@ from pydantic import BaseModel
 
 from app import config
 from app.auth import get_user_email, get_user_groups, is_admin
+from app.db.queries import people as q
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["identity"])
 
@@ -35,6 +52,31 @@ class Identity(BaseModel):
     # because a hidden button is a courtesy and not a check.
     is_admin: bool = False
     admin_group: str
+    # Whether this caller has a roster row yet. False sends them to onboarding instead
+    # of the roadmap - see the module docstring and AppShell.tsx. Defaults True so that
+    # anything which forgets to set it errs towards letting people in.
+    onboarded: bool = True
+
+
+def _has_roster_row(email: Optional[str]) -> bool:
+    """
+    Whether `email` is on the roster, failing OPEN.
+
+    A lookup error returns True, which is the opposite of how the group check fails
+    and is deliberate. `onboarded` is a routing hint, not a permission: getting it
+    wrong in the False direction parks an authorised person on a form that cannot
+    submit either, because the same table is down - a dead end that blames the user
+    for an outage. Getting it wrong in the True direction sends them to the roadmap,
+    which reports the actual failure. Nothing is protected by this flag, so there is
+    nothing to fail closed for.
+    """
+    if not email:
+        return True
+    try:
+        return q.get_person(email) is not None
+    except Exception:
+        logger.exception("Could not check the roster for %s; assuming onboarded", email)
+        return True
 
 
 @router.get("/me", response_model=Identity)
@@ -48,14 +90,17 @@ async def me(request: Request) -> dict[str, Any]:
     """
     email = get_user_email(request)
     groups = get_user_groups(request)
+    authorised = bool(email) and (not config.ENFORCE_GROUP or config.REQUIRED_GROUP in groups)
     return {
         "email": email,
         "groups": groups,
-        "authorised": bool(email) and (
-            not config.ENFORCE_GROUP or config.REQUIRED_GROUP in groups
-        ),
+        "authorised": authorised,
         "required_group": config.REQUIRED_GROUP,
         "enforced": config.ENFORCE_GROUP,
         "is_admin": is_admin(request),
         "admin_group": config.ADMIN_GROUP,
+        # Only for callers who got past the group check. Someone refused at the door
+        # is shown that refusal and never reaches onboarding, so the lookup would be a
+        # DynamoDB read per rejected compliance-tool login and answer nothing.
+        "onboarded": _has_roster_row(email) if authorised else True,
     }

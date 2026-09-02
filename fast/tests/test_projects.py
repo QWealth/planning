@@ -1,4 +1,11 @@
-"""Project and phase storage: key layout, reserved words, validation."""
+"""
+Project and phase storage: key layout, reserved words, validation.
+
+Mostly against the query layer, which is where these particular mistakes live. The two
+phase-delete tests are the exception and go through HTTP on purpose - what could break
+there is the route's 404 guard and the blast radius of the delete, neither of which is
+visible from `q.delete_phase`.
+"""
 
 import pytest
 
@@ -120,6 +127,55 @@ def test_delete_project_is_soft_and_hides_it(aws):
     assert project["project_id"] in [
         p["project_id"] for p in q.list_projects(include_inactive=True)
     ]
+
+
+def test_deleting_a_seeded_phase_leaves_the_rest_of_the_lane(client):
+    """
+    Removing one of the six standard phases is the normal use of the delete.
+
+    A new lane is seeded generously - Planning, Wireframes, Architecting, Coding,
+    Testing and a Maintenance band - on the argument that it is easier to remove a
+    stage than to remember one. Not every project has a Wireframes stage, so this is
+    the second half of that decision rather than an escape hatch for mistakes.
+
+    Asserted through HTTP rather than against the query layer because the thing that
+    could break is the route: a phase is a separate item under the project's partition
+    key, and a delete that took the project row or a sibling phase with it would still
+    answer 204.
+    """
+    created = client.post(
+        "/api/projects",
+        json={
+            "name": "Partner Onboarding",
+            "phases": [
+                {"name": "Planning", "phase_order": 0},
+                {"name": "Wireframes", "phase_order": 1},
+                {"name": "Coding", "phase_order": 2},
+            ],
+        },
+    ).json()
+    project_id = created["project_id"]
+    wireframes = next(p for p in created["phases"] if p["name"] == "Wireframes")
+
+    response = client.delete(f"/api/projects/{project_id}/phases/{wireframes['phase_id']}")
+    assert response.status_code == 204
+
+    fetched = client.get(f"/api/projects/{project_id}").json()
+    assert fetched["name"] == "Partner Onboarding"
+    assert [p["name"] for p in fetched["phases"]] == ["Planning", "Coding"]
+
+
+def test_deleting_an_unknown_phase_is_a_404_not_a_silent_success(client):
+    """
+    DynamoDB's delete_item is happily idempotent, so a 204 here would be free.
+
+    It would also be wrong: the UI removes the row from the lane on a 2xx, so a
+    mistyped or already-deleted id would disappear from the screen and come back on
+    the next load, which reads as the app having lost the edit.
+    """
+    project_id = client.post("/api/projects", json={"name": "Qfeed"}).json()["project_id"]
+
+    assert client.delete(f"/api/projects/{project_id}/phases/phase-nope").status_code == 404
 
 
 def test_list_projects_is_in_lane_order(aws):

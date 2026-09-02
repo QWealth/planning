@@ -23,6 +23,11 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Optional
 
+# The star scale and the read-time mapping off the old `level` string. Imported
+# rather than restated so the bounds cannot drift from the ones the schema validates
+# against; app/skills.py imports nothing from the app, so this cannot cycle.
+from app.skills import LEGACY_DEFAULT_STARS, LEGACY_LEVEL_STARS, MAX_STARS, MIN_STARS
+
 # Sort-key prefixes. Projects and phases share a partition so that one Query
 # returns a project and all of its phases.
 #
@@ -375,20 +380,62 @@ class PersonModel:
         Same rule as the plain-str email on PersonOut: one bad record should cost one
         odd-looking row, never the whole endpoint. A hand-edited item with a string
         where an object belongs would otherwise 500 GET /api/people for everybody.
+
+        THIS IS ALSO THE MIGRATION, AND THERE IS NO OTHER ONE.
+
+        Entries written before the star scale carry a `level` string instead of
+        `stars`, and are converted here rather than by a backfill script: primary ->
+        3, secondary -> 2, learning -> 0 stars with wants_to_learn set. Doing it on
+        read means no downtime, no one-off job to run against production, and no
+        window in which half the table is in each shape. Writes use the new fields, so
+        rows convert for real as people edit their own entries - and until they do,
+        both shapes read back identically.
+
+        Do not delete this once the table looks converted. "Looks converted" is a
+        statement about the rows somebody happened to check, and the cost of keeping
+        it is one dict lookup per skill.
         """
         raw = item.get("specialisations") or []
         if not isinstance(raw, list):
             return []
         out: list[dict[str, Any]] = []
         for entry in raw:
-            if isinstance(entry, dict) and entry.get("skill"):
-                out.append(
-                    {
-                        "skill": str(entry["skill"]),
-                        "level": str(entry.get("level") or "secondary"),
-                    }
-                )
+            if not isinstance(entry, dict) or not entry.get("skill"):
+                continue
+            out.append(
+                {
+                    "skill": str(entry["skill"]),
+                    "stars": PersonModel._stars(entry),
+                    # Either the stored flag, or the old `learning` level, which is
+                    # exactly what that value always meant.
+                    "wants_to_learn": bool(entry.get("wants_to_learn"))
+                    or str(entry.get("level") or "") == "learning",
+                }
+            )
         return out
+
+    @staticmethod
+    def _stars(entry: dict[str, Any]) -> int:
+        """
+        The star rating for one entry, from either shape, clamped to the scale.
+
+        Clamped rather than validated, because this is a read: a 7 in the table is
+        somebody's console edit and should show as three stars, not raise. The int()
+        is guarded too - DynamoDB hands numbers back as Decimal, which int() is happy
+        with, but a string or a nested map where a number belongs would otherwise be
+        an uncaught TypeError on the roster endpoint, which is the exact failure the
+        rest of this method exists to prevent.
+        """
+        if "stars" in entry:
+            try:
+                stars = int(entry["stars"])
+            except (TypeError, ValueError):
+                stars = LEGACY_DEFAULT_STARS
+        else:
+            stars = LEGACY_LEVEL_STARS.get(
+                str(entry.get("level") or ""), LEGACY_DEFAULT_STARS
+            )
+        return max(MIN_STARS, min(MAX_STARS, stars))
 
 
 class AuditLogModel:

@@ -36,9 +36,23 @@ export interface TimelineProps {
   expanded: ReadonlySet<string>;
   onToggle: (projectId: string) => void;
   onPhaseSaved: (phase: Phase) => void;
+  onPhaseDeleted: (projectId: string, phaseId: string) => void;
   onMilestoneSaved: (milestone: Milestone) => void;
   onMilestoneDeleted: (projectId: string, milestoneId: string) => void;
   onProjectSaved: (projectId: string, patch: ProjectPatch) => void;
+  /**
+   * Reorder mode. When set, every lane swaps its Edit button for move controls.
+   *
+   * Passed as one optional callback rather than as a `reordering` flag plus a handler,
+   * because the two cannot disagree: there is no such thing as reordering with nothing
+   * to call, or a move handler that is not meant to be shown.
+   *
+   * Whether each end of the list is reachable is decided HERE rather than in Lane,
+   * from the index in this array, because Lane sees one project and cannot know it is
+   * the last one. The array is already in display order - RoadmapPage sorts it - so
+   * the index is the position on screen.
+   */
+  onMoveProject?: ((projectId: string, delta: -1 | 1) => void) | null;
 }
 
 export default function Timeline({
@@ -48,7 +62,9 @@ export default function Timeline({
   today,
   expanded,
   onToggle,
+  onMoveProject,
   onPhaseSaved,
+  onPhaseDeleted,
   onMilestoneSaved,
   onMilestoneDeleted,
   onProjectSaved,
@@ -58,10 +74,12 @@ export default function Timeline({
       {projects.length === 0 ? (
         <Empty>No projects match the current filters.</Empty>
       ) : (
-        projects.map((project) => (
-          // The wrapper exists so a gap in the side panel can scroll its lane into
-          // view. Lane itself renders several sibling rows, so there is no single
-          // element to hang the anchor on from the inside.
+        projects.map((project, index) => (
+          // The wrapper exists so a lane can be scrolled into view from outside -
+          // RoadmapPage does it to a newly created project, which is otherwise
+          // appended below the fold. Lane itself renders several sibling rows, so
+          // there is no single element to hang the anchor on from the inside.
+          // (The gaps panel used to scroll here too, and has been removed.)
           <div key={project.project_id} id={laneAnchorId(project.project_id)}>
             <Lane
               project={project}
@@ -70,7 +88,17 @@ export default function Timeline({
               today={today}
               expanded={expanded.has(project.project_id)}
               onToggle={() => onToggle(project.project_id)}
+              move={
+                onMoveProject
+                  ? {
+                      onMove: (delta) => onMoveProject(project.project_id, delta),
+                      canMoveUp: index > 0,
+                      canMoveDown: index < projects.length - 1,
+                    }
+                  : null
+              }
               onPhaseSaved={onPhaseSaved}
+              onPhaseDeleted={onPhaseDeleted}
               onMilestoneSaved={onMilestoneSaved}
               onMilestoneDeleted={onMilestoneDeleted}
               onProjectSaved={onProjectSaved}

@@ -29,6 +29,7 @@ import { palette, radius } from '../styles/theme';
 import { ErrorText, Panel, SecondaryButton } from '../styles/ui';
 import type { Identity } from '../types';
 import type { AuthState } from './LoginGate';
+import Onboarding from './Onboarding';
 
 const Page = styled.div`
   max-width: 1500px;
@@ -141,6 +142,29 @@ export default function AppShell({ auth }: { auth: AuthState }) {
           </div>
         ) : null}
       </Denied>
+    );
+  }
+
+  /*
+    An invited colleague on their first sign-in: authorised, but with no roster row.
+
+    Checked with `=== false` rather than `!identity.onboarded`, and that is the whole
+    safety of it. The field is optional, so a backend deployed before it existed
+    returns undefined - which `!` would read as "not onboarded" and would gate the
+    entire team out of a working roadmap behind a form they have already filled in.
+    Only an explicit false, from a backend that actually looked, blocks anybody.
+  */
+  if (identity?.authorised && identity.onboarded === false && identity.email) {
+    return (
+      <Page>
+        <Masthead>
+          <Title>Planning Roadmap</Title>
+          <Spacer />
+          <Status>{identity.email}</Status>
+        </Masthead>
+        {/* No nav: the tabs go nowhere useful until there is a row to go there with. */}
+        <Onboarding email={identity.email} onDone={load} signOut={auth.signOut} />
+      </Page>
     );
   }
 

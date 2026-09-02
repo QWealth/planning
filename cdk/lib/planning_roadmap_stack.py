@@ -61,6 +61,32 @@ class PlanningRoadmapStack(cdk.Stack):
         cors_origins = self.node.try_get_context("cors_origins") or ""
         allow_whole_pool = bool(self.node.try_get_context("allow_whole_pool"))
 
+        # The address that goes in an invitation. Cognito's own email carries no link
+        # at all, so this string is the only thing telling an invited colleague where
+        # to go - which makes an empty one a silently useless invite rather than a
+        # visible failure. Falls back to the custom domain when one is configured.
+        app_url = self.node.try_get_context("app_url") or (
+            f"https://{self.node.try_get_context('domain_name')}"
+            if self.node.try_get_context("domain_name")
+            else ""
+        )
+
+        # IAM roles permitted to call /api/service/*, which today means the Aardvark
+        # Aap Slack bot and its `/roadmap-invite` command. Named here rather than
+        # inferred, because the grant that lets Aardvark reach this API is made in a
+        # DIFFERENT repository - so without this list, "who may create logins on the
+        # shared Cognito pool" would be answerable only by reading someone else's CDK.
+        # Empty means the service door is shut. See fast/app/routes/service.py.
+        service_caller_arns = self.node.try_get_context("service_caller_arns") or ""
+
+        # The Secrets Manager secret holding Aardvark's Slack bot token, which the
+        # invite picker reads the workspace directory with. Named here rather than
+        # defaulted in the API, so that "this app can read another app's secret" is a
+        # visible line in this repo's infrastructure and not a fallback buried in
+        # config.py. Empty means no picker and no DM - invites by typed address still
+        # work, which is what the app did before Slack.
+        slack_secret_name = self.node.try_get_context("slack_secret_name") or ""
+
         if require_auth and not enforce_group and not allow_whole_pool:
             # Not a hypothetical footgun: this combination is a shared pool with the
             # door open. The authorizer would accept any token the compliance pool
@@ -107,6 +133,9 @@ class PlanningRoadmapStack(cdk.Stack):
             admin_group=admin_group,
             cors_origins=cors_origins,
             require_auth=require_auth,
+            app_url=app_url,
+            service_caller_arns=service_caller_arns,
+            slack_secret_name=slack_secret_name,
             env=child_env,
         )
 

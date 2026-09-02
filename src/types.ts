@@ -96,25 +96,30 @@ export interface Project extends ProjectSummary {
 }
 
 /**
- * How somebody holds a skill - or wants to.
+ * How somebody holds a skill - and, separately, whether they want to.
  *
- * Four answers in the UI, three of them stored; "No" is the absence of an entry.
+ * TWO FIELDS, NOT ONE, AND THEY DO NOT IMPLY EACH OTHER.
  *
- *   primary    "Yes"                     the obvious person to ask
- *   secondary  "Yes, but slowly"         can do it, will take longer
- *   learning   "No, but wants to learn"  cannot do it today, wants the work
+ *   stars           0-3, what they can do TODAY. 3 is the obvious person to ask.
+ *   wants_to_learn  whether they want to be given this work.
  *
- * The stored values still read `primary`/`secondary` because the wording changed and
- * the data did not - relabelling must never rewrite what is in DynamoDB. There is
- * deliberately no numeric scale, and `learning` is deliberately NOT a third rung of
- * the ladder: it describes appetite, not ability. See fast/app/skills.py.
+ * A three-star engineer may still want more of it, and a zero-star one who ticks the
+ * box is precisely who a staffing search should surface when nobody else is free. An
+ * entry with neither - no stars and no appetite - says nothing and is refused by the
+ * API rather than stored; the form clears the entry instead of sending one.
+ *
+ * This replaced a single four-valued `level` (`primary`/`secondary`/`learning`).
+ * `learning` was welded onto a capability scale while explicitly not being part of
+ * one, so every consumer needed a comment telling it not to sort `learning` as a
+ * weaker `secondary`. Nothing was migrated: rows still holding a `level` are mapped
+ * on read by the API. See fast/app/skills.py for the whole argument.
  */
-export type SkillLevel = 'primary' | 'secondary' | 'learning';
-
 export interface Specialisation {
   /** A value from the vocabulary, e.g. `qa-testing`. Not a display label. */
   skill: string;
-  level: SkillLevel;
+  /** 0-3. Zero is only ever stored alongside `wants_to_learn`. */
+  stars: number;
+  wants_to_learn: boolean;
 }
 
 /**
@@ -252,6 +257,100 @@ export interface Identity {
    */
   is_admin: boolean;
   admin_group: string;
+  /**
+   * Whether this caller has a row on the roster yet.
+   *
+   * False only for somebody who has a working login and has never filled the form in
+   * — the state an invited colleague is in on their very first sign-in. The app
+   * blocks on it, because a person with no row cannot be assigned anything and would
+   * otherwise spend their first session looking at a roadmap they are absent from.
+   *
+   * FAILS OPEN. The backend answers `true` when it cannot tell (see `_has_roster_row`
+   * in fast/app/routes/identity.py), and an old backend that has never heard of the
+   * field leaves it undefined, which the shell must read as "onboarded". This is a
+   * routing hint, never a permission — being onboarded grants nothing, and every real
+   * check still happens server-side.
+   */
+  onboarded?: boolean;
+}
+
+/**
+ * The receipt from `POST /api/people/invite`.
+ *
+ * Both flags can be false on a completely successful call, and that is the normal
+ * case rather than an edge one: the Cognito pool is shared with the marketing
+ * compliance tool, so most colleagues already have a login and are already in the
+ * group. Inviting them is a no-op that should read as success, not as a 409.
+ */
+export interface InviteResult {
+  email: string;
+  /** False when the address already had an account in the shared pool. */
+  account_created: boolean;
+  /** False when they were already in the planning group. */
+  group_added: boolean;
+  /** Whether they already have a roster row, i.e. have been through onboarding. */
+  onboarded: boolean;
+  /**
+   * The text to send them, composed by the API.
+   *
+   * Deliberately not built here. The Slack bot sends this same invitation, and two
+   * copies of a paragraph whose job is to stop a colleague dismissing a legitimate
+   * credentials email as phishing is two copies that can drift - with the broken one
+   * still reading perfectly well. See fast/app/invites.py.
+   */
+  message: string;
+  /**
+   * Whether the API delivered `message` as a Slack DM.
+   *
+   * Only ever true when the address came from the Slack picker, because that is the
+   * only path where we know which human it belongs to. False for a typed address, and
+   * false for somebody already on the roster - who is sent nothing on purpose.
+   */
+  dm_sent: boolean;
+  /**
+   * Why the DM did not arrive, when one was attempted and failed.
+   *
+   * Set INDEPENDENTLY of the invite succeeding: the Cognito account exists by the time
+   * the DM is tried, so a failure here is a delivery problem, not a failed invite. The
+   * panel shows the copy block in this case, which is the pre-Slack path.
+   */
+  dm_error: string | null;
+}
+
+/**
+ * Somebody in the Slack workspace who could be invited.
+ *
+ * NOT a Person. Nobody here is on the team list - this is the list of people who
+ * could be, and the roster is still written by each of them at onboarding. The one
+ * field that crosses over is `on_roster`. See fast/app/routes/slack.py.
+ */
+export interface SlackPerson {
+  /** How we reach them. A delivery route, not an identity. */
+  slack_user_id: string;
+  name: string;
+  /** The identity: the roster key and the Cognito username. */
+  email: string;
+  avatar: string;
+  title: string;
+  /** Usually a contractor. Shown and flagged rather than hidden. */
+  is_guest: boolean;
+  /** Already has a roster row, so inviting them again would do nothing. */
+  on_roster: boolean;
+}
+
+/**
+ * The directory, plus enough to explain an empty one.
+ *
+ * An empty `people` has two causes that look identical: a workspace with nobody in
+ * it, and a Slack app missing `users:read.email`, which strips the address off every
+ * profile and filters everybody out. `filtered` tells them apart.
+ */
+export interface SlackDirectory {
+  people: SlackPerson[];
+  /** How many members Slack returned that were dropped for having no address. */
+  filtered: number;
+  /** Set when Slack could not be reached. The picker falls back to a typed address. */
+  unavailable: string | null;
 }
 
 /**
