@@ -22,6 +22,8 @@ PROJECTS_TABLE = "test-planning-projects"
 PEOPLE_TABLE = "test-planning-people"
 AUDIT_TABLE = "test-planning-audit"
 AUDIT_INDEX = "entity-timestamp-index"
+WORK_TABLE = "test-planning-work"
+WORK_INDEX = "kind-updated-index"
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +45,7 @@ def _no_real_aws(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def aws(_no_real_aws):
-    """Mock AWS, with the three tables created and the query modules re-pointed."""
+    """Mock AWS, with the four tables created and the query modules re-pointed."""
     with mock_aws():
         ddb = boto3.resource("dynamodb", region_name="ca-central-1")
 
@@ -63,6 +65,34 @@ def aws(_no_real_aws):
             TableName=PEOPLE_TABLE,
             KeySchema=[{"AttributeName": "email", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "email", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        # The work table carries the same GSI as the real one, and it matters that
+        # it is here rather than faked: list_rfcs and list_tasks Query the index
+        # rather than the table, so a suite without it would exercise a code path
+        # the deployed app never takes.
+        ddb.create_table(
+            TableName=WORK_TABLE,
+            KeySchema=[
+                {"AttributeName": "item_id", "KeyType": "HASH"},
+                {"AttributeName": "sk", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "item_id", "AttributeType": "S"},
+                {"AttributeName": "sk", "AttributeType": "S"},
+                {"AttributeName": "kind", "AttributeType": "S"},
+                {"AttributeName": "updated_at", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": WORK_INDEX,
+                    "KeySchema": [
+                        {"AttributeName": "kind", "KeyType": "HASH"},
+                        {"AttributeName": "updated_at", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
             BillingMode="PAY_PER_REQUEST",
         )
         ddb.create_table(
@@ -92,16 +122,19 @@ def aws(_no_real_aws):
         # The query modules bind `dynamodb` at import time, so the mock has to be
         # patched onto the already-imported modules rather than set via env vars.
         from app import config
-        from app.db.queries import audit, people, projects
+        from app.db.queries import audit, people, projects, work
 
         config.PROJECTS_TABLE_NAME = PROJECTS_TABLE
         config.PEOPLE_TABLE_NAME = PEOPLE_TABLE
         config.AUDIT_TABLE_NAME = AUDIT_TABLE
         config.AUDIT_BY_ENTITY_INDEX = AUDIT_INDEX
+        config.WORK_TABLE_NAME = WORK_TABLE
+        config.WORK_BY_KIND_INDEX = WORK_INDEX
 
         projects.dynamodb = ddb
         people.dynamodb = ddb
         audit.dynamodb = ddb
+        work.dynamodb = ddb
 
         yield ddb
 

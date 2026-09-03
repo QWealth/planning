@@ -41,6 +41,15 @@
  * button and gets a 403 they cannot act on: the roster rule is "edit yourself, ask an
  * admin for anyone else", and a greyed-out Deactivate says that where a red error
  * message after the fact does not.
+ *
+ * `starScale` is a different kind of flag: not a permission, a length. The picker is on
+ * every form that uses this component, the onboarding gate included - what somebody can
+ * be staffed onto is most of the reason their roster row is worth having, and a gate
+ * that skips the question has to ask it again later from a page nobody opens twice. What
+ * the gate turns off is the four-line scale legend above the rows, because a key to a
+ * control is the wrong thing to make somebody read before their first click. Nothing
+ * depends on having read it: every star carries its own words in a `title` and in
+ * screen-reader text, so the scale is on the row that needs it either way.
  */
 
 import { useState } from 'react';
@@ -185,7 +194,7 @@ const RoleChip = styled.label<{ $on: boolean }>`
   border-radius: ${radius.pill};
   border: 1px solid ${(p) => (p.$on ? palette.hotPink : palette.border)};
   background: ${(p) => (p.$on ? palette.hotPink : palette.card)};
-  color: ${(p) => (p.$on ? '#ffffff' : palette.inkSoft)};
+  color: ${(p) => (p.$on ? palette.onAccent : palette.inkSoft)};
   transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
 
   &:hover {
@@ -487,6 +496,15 @@ interface PersonEditorProps {
    */
   admin: boolean;
   /**
+   * Whether to print the star scale above the specialisation rows. Default true.
+   *
+   * False on the onboarding gate, which asks the same question with the same control
+   * and simply does not spell the scale out first. It is not a way to drop the picker -
+   * there is no way to drop the picker, and the empty-vocabulary case below is a
+   * different thing again - only a way to stop explaining it.
+   */
+  starScale?: boolean;
+  /**
    * On a create, the only address this caller is allowed to use.
    *
    * A non-admin may add exactly themselves, so there is nothing to type: the field is
@@ -512,6 +530,7 @@ export default function PersonEditor({
   roles,
   assignments,
   admin,
+  starScale = true,
   lockedEmail = null,
   onSaved,
   onDeleted,
@@ -761,76 +780,88 @@ export default function PersonEditor({
         ) : null}
       </Roles>
 
-      <Skills>
-        <SkillsLegend>Specialisations</SkillsLegend>
-        {/* Stated once, at the top, instead of on all eleven rows. See Legend above. */}
-        <Legend aria-hidden="true">
-          {STAR_VALUES.map((value) => (
-            <LegendItem key={value}>
-              <LegendStars>
-                {'★'.repeat(value)}
-                {'☆'.repeat(MAX_STARS - value)}
-              </LegendStars>
-              {STAR_LABELS[value]}
-            </LegendItem>
-          ))}
-        </Legend>
-        <SkillGrid>
-          {skills.map((skill) => {
-            const rating = Number(stars?.[skill.skill] ?? 0) || 0;
-            const wants = Boolean(learn?.[skill.skill]);
-            return (
-              <SkillRow key={skill.skill}>
-                <SkillName title={skill.description}>{skill.label}</SkillName>
-                {/* radiogroup, not group: four radios where exactly one is chosen.
-                    The accessible name has to carry the skill, because the stars
-                    themselves are identical on every row. */}
-                <Stars role="radiogroup" aria-label={`${skill.label} — rating`}>
-                  <ClearStars $on={rating === 0} title={`${skill.label}: ${starLabel(0)}`}>
-                    <span aria-hidden="true">✕</span>
-                    <VisuallyHidden as="span">
-                      {skill.label} — {starLabel(0)}
-                    </VisuallyHidden>
-                    <VisuallyHidden
-                      as="input"
-                      type="radio"
-                      value="0"
-                      {...register(`stars.${skill.skill}` as const)}
-                    />
-                  </ClearStars>
-                  {STAR_VALUES.map((value) => (
-                    <Star
-                      key={value}
-                      // Cumulative: every star up to the rating is filled, which is
-                      // what a star rating means. Not "this one is the selected radio".
-                      $on={value <= rating}
-                      title={`${skill.label}: ${starLabel(value)}`}
-                    >
-                      <span aria-hidden="true">{value <= rating ? '★' : '☆'}</span>
+      {/*
+        Gated on the VOCABULARY, not on which screen this is. Every form asks the
+        question; the only case with nothing to ask is a caller holding an empty skill
+        list, and a fieldset headed "Specialisations" with no rows under it reads as a
+        render that failed rather than as a question with no options.
+
+        The scale legend inside is the part the onboarding gate drops - see starScale.
+      */}
+      {skills.length > 0 ? (
+        <Skills>
+          <SkillsLegend>Specialisations</SkillsLegend>
+          {/* Stated once, at the top, instead of on all eleven rows. See Legend above. */}
+          {starScale ? (
+            <Legend aria-hidden="true">
+              {STAR_VALUES.map((value) => (
+                <LegendItem key={value}>
+                  <LegendStars>
+                    {'★'.repeat(value)}
+                    {'☆'.repeat(MAX_STARS - value)}
+                  </LegendStars>
+                  {STAR_LABELS[value]}
+                </LegendItem>
+              ))}
+            </Legend>
+          ) : null}
+          <SkillGrid>
+            {skills.map((skill) => {
+              const rating = Number(stars?.[skill.skill] ?? 0) || 0;
+              const wants = Boolean(learn?.[skill.skill]);
+              return (
+                <SkillRow key={skill.skill}>
+                  <SkillName title={skill.description}>{skill.label}</SkillName>
+                  {/* radiogroup, not group: four radios where exactly one is chosen.
+                      The accessible name has to carry the skill, because the stars
+                      themselves are identical on every row. */}
+                  <Stars role="radiogroup" aria-label={`${skill.label} — rating`}>
+                    <ClearStars $on={rating === 0} title={`${skill.label}: ${starLabel(0)}`}>
+                      <span aria-hidden="true">✕</span>
                       <VisuallyHidden as="span">
-                        {skill.label} — {value} of {MAX_STARS}, {starLabel(value)}
+                        {skill.label} — {starLabel(0)}
                       </VisuallyHidden>
                       <VisuallyHidden
                         as="input"
                         type="radio"
-                        value={String(value)}
+                        value="0"
                         {...register(`stars.${skill.skill}` as const)}
                       />
-                    </Star>
-                  ))}
-                </Stars>
-                <LearnBox
-                  $on={wants}
-                  title={`${skill.label}: wants to be given this work`}
-                >
-                  <input type="checkbox" {...register(`learn.${skill.skill}` as const)} />
-                  Wants to learn
-                </LearnBox>
-              </SkillRow>
-            );
-          })}
-        </SkillGrid>
-      </Skills>
+                    </ClearStars>
+                    {STAR_VALUES.map((value) => (
+                      <Star
+                        key={value}
+                        // Cumulative: every star up to the rating is filled, which is
+                        // what a star rating means. Not "this one is the selected radio".
+                        $on={value <= rating}
+                        title={`${skill.label}: ${starLabel(value)}`}
+                      >
+                        <span aria-hidden="true">{value <= rating ? '★' : '☆'}</span>
+                        <VisuallyHidden as="span">
+                          {skill.label} — {value} of {MAX_STARS}, {starLabel(value)}
+                        </VisuallyHidden>
+                        <VisuallyHidden
+                          as="input"
+                          type="radio"
+                          value={String(value)}
+                          {...register(`stars.${skill.skill}` as const)}
+                        />
+                      </Star>
+                    ))}
+                  </Stars>
+                  <LearnBox
+                    $on={wants}
+                    title={`${skill.label}: wants to be given this work`}
+                  >
+                    <input type="checkbox" {...register(`learn.${skill.skill}` as const)} />
+                    Wants to learn
+                  </LearnBox>
+                </SkillRow>
+              );
+            })}
+          </SkillGrid>
+        </Skills>
+      ) : null}
 
       <Actions>
         {/* Shown to everybody, editable by admins only. Hiding it from a plain member

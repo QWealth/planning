@@ -12,7 +12,7 @@ Replaces `~/projects/Planning Gantt Chart (Aug24).xlsx`. The workbook is being
 - **Account**: AWS 778983355679 (ca-central-1) — same as the marketing tool
 - **Status**: everything built so far is **deployed to `dev`** — migration, backend,
   frontend, infra, plus the Team page, the specialisations vocabulary and
-  milestones. 176 backend tests + 97 frontend tests pass.
+  milestones. 435 backend tests + 219 frontend tests pass.
   Verified against the deployed Lambda on 2026-09-01, not inferred from a successful
   `cdk deploy`: `/api/skills` answers with all eleven skills, `/api/roles` answers with
   all six roles, and a synthetic caller holding `cognito:groups = "[marketing]"`
@@ -30,9 +30,29 @@ Replaces `~/projects/Planning Gantt Chart (Aug24).xlsx`. The workbook is being
   learn" tick (the two are independent axes; **Figma** joined the vocabulary beside
   ui-ux), the roster is **self-service** (edit yourself; admins edit anyone), and
   the `planning` group check is **off** so any pool account can get in. Since *that*:
-  people carry **roles** (BA / UX / Software engineer / QA / Data / Leadership — one
+  people carry **roles** (BA / UX / Software engineer / QA / Data / Leadership /
+  Outside engineering — one
   or more, required on sign-up) and the **`manager_email` field is gone** from the
   code and from the data. All of it is **deployed** as of 2026-09-01.
+  **Also deployed, on 2026-09-02**: the Board is **grouped by project** with a banner
+  and an **"Assign all"** control per group, the onboarding gate dropped **both the
+  specialisation picker and the star legend** (half of which was reversed the same day
+  — see "Not yet deployed"), and a milestone may be **filed under a phase** — nullable `phase_id`, a "Part of" picker in the editor, and the row drawn
+  under its phase in the expanded lane. Verified end to end against `demo.py` in a
+  headless browser, not only in unit tests: attaching, detaching and deleting the
+  phase out from under a milestone all move the row live, with no console errors.
+  Then verified against the deployed Lambda by synthetic proxy event — every
+  milestone comes back carrying `phase_id`, and `openapi.json` has it on all three
+  milestone schemas — and against CloudFront, which serves the new strings from the
+  freshly split `RoadmapPage-*.js` and `TasksPage-*.js` chunks.
+  **Not yet deployed** (built and tested on 2026-09-02, awaiting a commit and a
+  `cdk deploy`): **a project collapses on both pages, and yours start open** — the
+  Roadmap no longer opens all-collapsed, and the Board's project banners now carry the
+  chart's own disclosure arrow. See "Collapsed by default, except the ones that are
+  yours" below. Also **the onboarding gate asks for specialisations again** — the
+  picker is back, none of it is required, and the star legend stays off there. See
+  "The onboarding gate". And **dark mode**, black and pink, taken from the operating
+  system with no toggle and no icon. See "Dark mode".
 - **URL**: <https://planning.qconnect.qwnext.com> — CloudFront, valid TLS, now
   serving the React app from `dist/`. `/api/*` and `/health` route through to API
   Gateway on the same origin. Sign-in is the shared Cognito pool; **any account in
@@ -273,6 +293,46 @@ an answer that is not "close the tab".
 The email field is `disabled` and the saved value is taken from `lockedEmail`, **not
 from the form** — a disabled input is exactly the kind of thing a form library is
 entitled to drop.
+
+**It asks the same questions the Team page does: email, name, role, and what you
+specialise in.** The picker was taken off this screen on 2026-09-02 and put back the
+same day *by request* — "please make the user pick the skills and stuff when they sign
+up" — so read the two together rather than treating either as the last word:
+
+- **The picker is on the gate.** Later is a page a new colleague has no reason to open:
+  they are told they are not on the team list, they fill in the form that fixes it, and
+  that is plausibly the last time they look at their own row for months. A roster whose
+  skills nobody rated cannot answer the question it exists to answer — who could pick
+  this up.
+- **Nothing in it is required.** This screen blocks, which makes every required field
+  on it a field somebody must satisfy before they can use the app at all, and a rating
+  extracted under those conditions is a rating somebody invented. Zero stars with the
+  box unticked is a real answer and is dropped on both sides — `buildSpecialisations`
+  on the way out, `SpecialisationIn.must_say_something` on the way in — so a row
+  created here carries exactly what it was actually given. Only name and role are
+  enforced, as before. **Proved in a browser:** a submit with no stars touched clears
+  the gate and `/api/me` flips to `onboarded`.
+- **The star legend stays off**, which is the surviving half of "remove the description
+  of the stars". `starScale={false}`, and that flag is *only* about the four-line key
+  above the rows: each star still names itself in a `title` and in screen-reader text,
+  so the scale is on the row that needs it. The Team page still prints the block, which
+  is the differential the browser check asserts — legend absent on the gate, present on
+  Team, per-star labels on both.
+- **`skills.length > 0` is what actually gates the fieldset** in `PersonEditor`, not
+  which screen it is. The only case with nothing to ask is a caller holding an empty
+  vocabulary, and a fieldset headed "Specialisations" with no rows under it reads as a
+  failed render rather than as a question with no options.
+- The cost is one more round trip before the form can draw: `GET /api/skills`, fetched
+  **with** `GET /api/roles` in a single `Promise.all` so it is one wait and not two,
+  and all-or-nothing — a half-loaded form would look complete and quietly create a row
+  with no specialisations, which is the outcome asking here exists to prevent.
+
+A trap worth writing down, found while checking this: asserting "the scale is gone" by
+searching `innerText` for `The obvious person to ask` **passes when it should fail**.
+Those words are also the `VisuallyHidden` label on every third star, so the check
+matches the thing that is meant to survive the legend's removal. The legend renders all
+three stars of a row inside *one* span, while the rating rows give each star its own —
+so the honest test is whether `★★★` appears contiguously inside a single leaf element.
 
 ### Exercising it locally
 
@@ -520,8 +580,14 @@ planning_roadmap/
 │   │   ├── schemas/             ← projects.py, people.py
 │   │   ├── roles.py             ← the CLOSED role vocabulary (what someone IS)
 │   │   ├── skills.py            ← the CLOSED specialisation vocabulary (what they CAN DO)
-│   │   └── seeds/load_roadmap.py ← roadmap.json + people map → DynamoDB
-│   └── tests/                   ← 176 tests, moto-backed. test_people_self_service.py
+│   │   ├── work.py              ← RFC + task vocabulary; why there is no `superseded`
+│   │   └── seeds/
+│   │       ├── load_roadmap.py  ← roadmap.json + people map → DynamoDB
+│   │       ├── load_jira_tasks.py       ← Jira export → the work table (one-time)
+│   │       ├── load_confluence_rfcs.py  ← Confluence export → RFCs (one-time)
+│   │       ├── atlassian.py     ← clean_adf: the ONE ADF cleanup, three callers
+│   │       └── fix_adf_bodies.py        ← idempotent repair of already-imported bodies
+│   └── tests/                   ← 435 tests, moto-backed. test_people_self_service.py
 │                                  is the who-may-act-on-whom rule, over HTTP
 ├── src/                         ← React frontend
 │   ├── App.tsx                  ← LoginGate + BrowserRouter + the two routes
@@ -541,7 +607,8 @@ planning_roadmap/
 │   │   ├── PersonEditor.tsx     ← add/edit one person; the skill picker
 │   │   ├── Legend.tsx (primitives + StateKey, exported), LoginGate.tsx
 │   ├── services/                ← api.ts (axios + token interceptor), auth.ts
-│   ├── styles/                  ← theme.ts (palette + state colours), ui.ts
+│   ├── styles/                  ← theme.ts (palette as CSS vars, light+dark pairs,
+│   │                              state colours, themeVars), ui.ts
 │   ├── utils/                   ← dates.ts (UTC-anchored), phaseState.ts,
 │   │                              segments.ts, milestones.ts, assignments.ts
 │   │                              (the person-centric transpose) — all pure,
@@ -578,7 +645,7 @@ must come first — `r'<c\b[^>]*?/>|<c\b[^>]*?>.*?</c>'`. The other order lets
 
 ## Data model
 
-Three tables. Projects and phases share one, partitioned on `project_id`, so
+Four tables. Projects and phases share one, partitioned on `project_id`, so
 reading a project and everything in it is a single Query.
 
 ```
@@ -594,6 +661,13 @@ planning-roadmap-people     PK email                 → name, roles [str], acti
 planning-roadmap-audit      PK entity_id, SK timestamp
                             GSI entity-timestamp-index (PK entity, SK timestamp)
                                                      → action, before, after, user_email
+planning-roadmap-work       PK item_id
+                            GSI kind-updated-index (PK kind, SK updated_at)
+                            kind = "rfc"             → title, body, status, project_id,
+                                                       owner_email, decided_on
+                            kind = "task"            → title, body, status, project_id,
+                                                       parent_id, owner_email, due,
+                                                       task_order
 ```
 
 Assignments are attributes on the project row rather than their own table. With a
@@ -628,6 +702,41 @@ phases with no owner or milestones stuck at 0% forever, and both draw as a lie.
   commitment as achieved.
 - Milestone dates widen the roadmap span. A deadline past the last phase must not
   fall off the right edge of the chart — that is why it was recorded.
+- `phase_id` **is nullable, and null is the ordinary case.** A milestone may name the
+  phase it belongs to ("Infra hardening signed off" is a moment inside Infra) and may
+  name none ("Regulatory deadline" is a date the whole lane answers to and is not a
+  step in any one stage of it). The picker in `MilestoneEditor` therefore leads with
+  "Not tied to a phase" and defaults to it: a required attachment would file every
+  company-wide date under whichever phase happened to be nearest, and that phase
+  would then look like it owned a commitment nobody gave it.
+
+#### A milestone under a phase, and the four rules that hold it there
+
+1. **The reference is checked in the query layer, not the schema.** `_check_phase_ref`
+   in `db/queries/projects.py` refuses a `phase_id` that is not a phase of *this*
+   project, because DynamoDB has no foreign keys and a schema cannot read another row.
+   Same place as every other cross-row rule in the app.
+2. **Only a *sent* `phase_id` is validated.** `update_phase` validates its merged
+   result; `update_milestone` deliberately does not, so a row whose phase was broken
+   by hand can still have its name fixed. Checking the merged value would block an
+   unrelated rename on an already-dangling row.
+3. **Deleting a phase detaches its milestones** — `detach_phase_milestones`, called
+   before the delete. Same "delete promotes, never cascades" rule as a subtask whose
+   ticket goes away, and each detach is its own audit row so the history is
+   discoverable from the milestone and not only from the phase.
+4. **`create_project` refuses an inline milestone `phase_id` with a 400.** No phase in
+   that request has an id yet, so any value there is either a lie or a dangling
+   reference. Create, then PATCH.
+
+On the client, `placeMilestones` (`utils/milestones.ts`) splits a lane's milestones
+into `byPhase` and `onLane`, and an **unresolvable `phase_id` falls back to the lane**
+rather than being dropped — the same argument as `decorate`'s dangling `parent_id`:
+the server has already decided, the payload is merely stale, and vanishing from the
+only screen that lists a commitment is the failure this app exists to end. The
+EXPANDED lane draws the attached ones directly under their phase, indented a second
+step (`PhaseLabelCell`'s `$nested`); the COLLAPSED lane ignores the attachment
+entirely, because a diamond's position is its date and a date does not move by being
+filed under Infra.
 
 **Never name a pydantic field after its own type.** This cost a debugging round:
 
@@ -673,6 +782,50 @@ the new item in the wrong place. The client computes and sends the next order
 instead (`nextPhaseOrder` in `Lane.tsx`, `nextLaneOrder` in `RoadmapPage.tsx`).
 Neither column is unique; a collision just falls through to the name tiebreak.
 
+### Reordering lanes, and why it renumbers instead of swapping
+
+`lane_order` has been in `PROJECT_UPDATABLE` since the table was designed, so **there
+is no backend work in reordering the roadmap** — it is a PATCH of a field that was
+always writable. What was missing was any way to *reach* it: `ProjectEditor` set it
+once on create and nothing could touch it afterwards, so the order everyone read the
+board in was frozen at whatever order the spreadsheet happened to have.
+
+The Roadmap toolbar has a **Reorder** button. It holds a **draft order** (`draftOrder`
+in `RoadmapPage.tsx`, project ids only) while each lane swaps its Edit button for
+▲/▼, and writes nothing until **Save order**. A draft rather than a PATCH per click,
+because reordering is a sequence of moves converging on an arrangement — saving each
+step would write and *audit* half a dozen intermediate orders nobody wanted, and two
+fast clicks would race two overlapping PATCH pairs.
+
+**The obvious implementation — swap the two lanes' `lane_order` values — is wrong
+here, and the stored data hits it.** Nothing has ever enforced uniqueness on that
+column (see the paragraph above), and the workbook seed produced ties. Swapping two
+*equal* orders writes the same numbers back: the user clicks Move up, the row does not
+move, and nothing on screen explains why. So `utils/laneOrder.ts` **renumbers the
+visible list to its array index** and emits only the rows whose stored value actually
+differs. That cannot no-op, it self-heals (after one save the orders are dense and
+distinct), and the stored number ends up meaning exactly what the screen shows.
+
+Two consequences worth knowing:
+
+- **Renumbering is not an edit.** The seed is sparse, so `laneOrderChanges` has rows
+  to write the instant the mode opens. Gating Save on that would offer to save
+  something the user never did and greet them with "3 lanes will be renumbered". Save
+  is gated on `orderChanged` — a *positional* comparison against the stored order —
+  which also makes move-and-move-back correctly go quiet. `pendingOrder.length` is
+  only ever used to *report* how many rows a real change will write, which is often
+  more than the number moved.
+- **Only the visible (active) lanes are renumbered.** An archived lane keeps its old
+  order and can therefore collide with a renumbered active one. This is the same
+  collision `nextLaneOrder` already tolerates, for the same reason: the cost is two
+  lanes adjacent in an unexpected order, and only if somebody restores an archive.
+
+`saveLaneOrder` issues the PATCHes in parallel and **rejects on the first failure
+while the rest land**, so a failed save leaves the stored order part-applied. There is
+no honest rollback — the successful writes are committed — so `saveOrder` refetches
+rather than keeping its draft on screen. The error message is set *after* `load()`,
+because `load()` clears the error on its way in and would otherwise wipe it.
+
 ### Validate input, not output
 
 `PersonCreate.email` is `EmailStr`. **`PersonOut.email` is a plain `str`**, and the
@@ -691,8 +844,19 @@ endpoint. Pinned by `test_one_odd_stored_address_does_not_kill_the_whole_respons
 ### Roles — what somebody IS
 
 A second **closed** vocabulary, in `fast/app/roles.py`, served by `GET /api/roles`,
-held against a person as `roles: [str]`. Six entries: `ba`, `ux`, `software-engineer`,
-`qa`, `data`, `leadership`.
+held against a person as `roles: [str]`. Seven entries: `ba`, `ux`,
+`software-engineer`, `qa`, `data`, `leadership`, `outside-engineering`.
+
+**`outside-engineering` is the catch-all**, added by request. Six of the seven name a
+craft; this one names the absence of one — operations, product, compliance, marketing,
+finance — so somebody who does none of the delivery disciplines has an honest row
+instead of picking the nearest wrong answer. It is **one entry rather than four**
+deliberately: splitting it would read better on a roster and would be four guesses
+about an org chart this app does not model, made at the moment somebody is filling in a
+form about themselves, and a role nobody picks consistently is a filter that returns
+the wrong people. It sits **last** in the picker, like `other` at the bottom of the
+phase-state ranking, because a list that offers the catch-all first invites people to
+stop reading. `test_the_catch_all_is_last` pins the position, not just the membership.
 
 **At least one is required to add yourself.** It is the one field on `PersonCreate`
 with no default and no server-side fallback: a defaulted role would put "Software
@@ -724,7 +888,7 @@ operation. Pinned by `test_leadership_is_a_job_not_a_permission`.
 
 **Roles are not a coarser grain of skills.** A role says "I am a designer"; a skill
 says "I can be staffed onto this". A back-end engineer who is handy with CSS holds
-`front-end` and is not `ux`. Roles stay coarse — six entries, for reading a roster at a
+`front-end` and is not `ux`. Roles stay coarse — seven entries, for reading a roster at a
 glance — and granularity belongs in skills, which is the list that grows. The two
 pickers are deliberately shaped differently: skills are a star rating plus a separate
 tick ("how much, and do you want more"), roles are detached chips with ticks ("pick as
@@ -964,6 +1128,253 @@ Two things that look incidental and are not:
 - **`Lane.tsx` closes the editor before calling `onPhaseDeleted`.** The editor is
   rendered *under the row for the phase being deleted*, so the other order strands an
   open form editing something that no longer exists.
+- **Its milestones survive it.** The backend detaches them (see "Milestones" above)
+  and the client needs no matching change: `placeMilestones` already falls back to
+  the lane for a `phase_id` it cannot resolve, so the deadline hops from under the
+  phase to the lane's own list in the same render, without a refetch.
+
+### RFCs and tasks: one table, two kinds
+
+A written decision (`kind: "rfc"`) and a unit of work (`kind: "task"`) share
+`planning-roadmap-work`. They are one entity because **a ticket and a subtask are the
+same thing** — the user said so, and modelling them apart would have meant two tables
+whose only difference was which one was allowed a parent.
+
+Both have a **nullable `project_id`**, which is the whole reason the table exists.
+`project_id` is the projects table's *partition key*, so "how we do code review" —
+a decision about no project in particular — is literally unrepresentable there
+without inventing a sentinel partition to hold the homeless rows.
+
+`list_rfcs`/`list_tasks` **Query `kind-updated-index`**, not Scan. `list_projects`
+still scans, and that is the thing this table was designed not to repeat.
+
+**Tickets vs subtasks: `parent_id`.** Null means top-level. Nesting is capped at one
+level and the cap is checked in **both directions** — you cannot parent onto a
+subtask, and you cannot give a parent to something that already has children. Two
+checks rather than a reachability walk, so cycles are impossible by construction
+rather than by a search that has to be right every time.
+
+**Delete promotes, it does not cascade.** `delete_task` re-parents children to
+top-level *before* removing the parent. The other order leaves children pointing at a
+dead id, which does not orphan them visibly — it makes them vanish from any board
+that groups by parent. Each promotion is written to the audit trail as its own
+update: a subtask that appears at the top of the backlog with nothing in its history
+to explain how it got there is a worse bug than the one being avoided.
+
+RFCs and tasks take **separate audit entities** (`ENTITY_RFC`, `ENTITY_TASK`) even
+though they share a table, because `/history` filters on entity and "every decision
+that was withdrawn" and "every task that got reassigned" are questions from different
+screens.
+
+**The status vocabulary is served, never hardcoded in the client.**
+`/api/rfcs/statuses` and `/api/tasks/statuses` return `{status, label, description,
+closed}`. `closed` travels with each entry precisely so the frontend does not need a
+second copy of `RFC_CLOSED` in another language — adding a sixth status is one
+backend deploy. The list page treats an **unknown** status as OPEN, so a backend
+running ahead of the frontend hides nothing.
+
+#### The frontend side
+
+- **`src/components/Markdown.tsx` is the only place react-markdown is called**, and
+  the docstring there is load-bearing: the library is safe because it builds React
+  elements rather than using `dangerouslySetInnerHTML`, so raw HTML in an RFC body is
+  *ignored*. **Adding `rehype-raw` would turn that into stored XSS** — bodies are
+  written by one signed-in colleague and rendered in another's tab. `remark-gfm` is
+  safe and stays.
+- **Routes are lazy** (`src/App.tsx`). Markdown is ~165 kB needed by exactly one
+  route; the split moved the entry chunk from 983 kB to 919 kB *while* adding it.
+  `Suspense` lives in **AppShell, wrapped around its existing
+  `<Outlet context={identity} />`** — not around a nested `<Outlet />`, because
+  react-router's `useOutlet` always installs a context provider, so an inner outlet
+  would shadow `identity` with `undefined` and silently make every page's
+  `useIdentity()` return null.
+- **`/rfcs/new` is a real route, not a modal**, and the `new` sentinel cannot collide
+  because ids carry an `rfc_` prefix. "Here, write it up" should be a link somebody
+  can send.
+- Grouping and summarising live in **`src/utils/rfcs.ts`** as pure functions, because
+  the project has vitest but no jsdom — "an RFC whose project was deleted still
+  appears, labelled by its id" is untestable inside a component.
+
+#### The Board (`TasksPage.tsx`, `TaskPage.tsx`, `TaskEditor.tsx`)
+
+The **Board** tab is the backlog. `/tasks` is columns-by-status, `/tasks/:itemId`
+is one ticket with its subtasks, and `/tasks/new` is the editor with nothing
+loaded — same shape as the RFC pair, and the `new` sentinel is safe because ids
+carry a **`tsk_`** prefix (note `tsk`, not `task`).
+
+- **`TaskEditor` is one component for tickets and subtasks alike**, and on an edit
+  it sends **only `dirtyFields`**. That is not a bandwidth nicety: `parent_id: null`
+  *promotes*, so a form that posted all its values would send `parent_id: null`
+  every time somebody fixed a typo in a subtask's title. Each edit would look
+  correct in isolation while the backlog quietly flattened over a week. The empty
+  option in that select is likewise a **promotion, not a blank** — sent as `''` the
+  backend looks for a ticket whose id is the empty string and 400s the whole edit,
+  so `buildTaskPatch` coerces `'' → null`.
+- **A task with children renders the parent select disabled**, reading "A ticket of
+  its own". Disabled rather than absent, so the field does not vanish between one
+  task and the next.
+- **The body is a plain `textarea`, kept deliberately short.** A task is a line with
+  a note attached; the thing you write paragraphs in is an RFC. The shape of the
+  field is the only thing telling anybody which of the two they are supposed to be
+  writing, so do not grow it and do not render it as markdown.
+- **Two kinds of empty column, and only one is worth drawing.** An empty "In
+  progress" is a fact about the week and stays. An empty "Done" *while the closed
+  toggle is off* is guaranteed empty by the toggle, and spends a fifth of the
+  board's width restating what the "Show N closed" button already says.
+- **Owners in the filter come from the tasks, not the people roster.** Work is
+  routinely owned by somebody who has not been onboarded into this app yet.
+- **Parent lines are decorated from the whole list, not the filtered one**, so a
+  subtask keeps its "↳ parent" caption when the parent is filtered out.
+- `const NO_PROJECT = ' none'` — a select's value is a string, so "unattached only"
+  needs a sentinel that cannot be a project id. Without it the filter collapses into
+  "no filter" and silently shows everything.
+- **`repeat(auto-fit, 225px)`, measured rather than guessed.** Five tracks plus four
+  14px gaps need `5 * track + 56` inside a grid measuring 1194px at a 1280px window,
+  which caps the track at 227px. **Do not "improve" this to `minmax(200px, 225px)`:
+  the floor is dead code.** `auto-fit` computes its repetition count from the MAX
+  sizing function when that is definite, and the tracks then render at exactly that
+  max — measured, as `grid-template-columns: 250px 250px 250px 250px` on a grid wide
+  enough for a fifth. Two wrong guesses were corrected only by reading the computed
+  value back out of the browser.
+
+#### The board is grouped by project, and the groups are in roadmap order
+
+One flat set of status columns was the first version and it did not survive contact
+with 287 imported tasks: "Backlog · 141" is a number nobody can act on, and the one
+question actually being asked of the board — *what is outstanding on Tax* — meant
+reading every card's project caption. So `groupTasks` (`utils/tasks.ts`) splits the
+list and `TasksPage` draws a **banner per project** with the status columns repeated
+underneath it. The ordering, the unattached-first rule and the deleted-project label
+live in `groupByProject`, **shared with the RFC list** so the two pages cannot come
+to disagree about what order the projects go in.
+
+- **Ordered by the roadmap's `lane_order`, not alphabetically and not by volume.**
+  The board and the chart are two views of one plan, and a reader who has learned
+  the order of the lanes should not have to learn a second one. Reordering lanes on
+  the roadmap reorders the board.
+- **"Not tied to a project" is a group, and it comes first.** A nullable
+  `project_id` is a deliberate state, so its tasks get a heading of their own rather
+  than a bucket at the bottom that reads as leftovers.
+- **A project with no tasks gets no banner.** Nine empty lanes of five empty columns
+  is a screenful of nothing; the project filter still lists every project, so
+  nothing becomes unreachable.
+- **Empty status columns inside a group are still drawn** (as `—`), for the same
+  reason as before: an empty "In progress" under Tax is a fact about the week.
+- **Grouped on the task's OWN `project_id`, never its parent's.** A subtask may be
+  attached to a different project from its ticket, or to none while the ticket has
+  one, so inheriting would invent an attachment nobody typed — and it would disagree
+  with the toolbar's project filter, which reads `task.project_id` directly. A filter
+  and a heading answering the same question differently is the kind of bug people
+  find by noticing a task is missing. The visible cost is that a subtask can appear
+  under a different banner from its ticket, and the card's `↳ parent` line is what
+  pays for it.
+
+#### "Assign all", and why a bulk write asks first
+
+`AssignAll.tsx` sits in each banner. 287 tasks arrived from Jira with almost no
+assignee — Jira's own field was often unset, and where it was set it was a display
+name we refused to guess an address from — and setting the same owner forty times
+through forty forms is not a workflow, it is how the owner column stays empty.
+
+- **It writes exactly the rows drawn under its own banner**, because it is handed the
+  already-filtered list rather than looking tasks up by project id. "What is on
+  screen under this heading" is a rule somebody can hold in their head; "everything
+  in the project, including what the toggle is hiding" is not.
+- **It confirms in place, and the question carries the count and the person**:
+  "Assign 14 tasks in Tax to sam@qwealth.com?". A count is what turns this from a
+  button somebody presses to see what it does into a decision. This is the only
+  control in the app that writes to dozens of rows from one click, and there is no
+  undo.
+- **The writes are sequential.** There is no bulk endpoint, so it is N PATCHes
+  either way; sequential is what lets a partial failure say *"Assigned 14 of 31
+  before this: …"*. Fired in parallel, a rejection says nothing about how much
+  landed.
+- **Rows already owned by the chosen person are skipped** (`tasksToAssign`), so the
+  audit trail does not fill with PATCHes that set a field to the value it held.
+- The trigger's label carries the count once somebody is picked — `Assign 3`, not
+  `Assign all` — and is disabled **with a title explaining why** rather than hidden.
+  "Everybody here is already theirs" is a useful answer; a button that disappears
+  when you pick a name reads as a broken picker.
+- **It is not rendered at all while its section is collapsed.** That is the first
+  rule again rather than a new one: with the board folded away there are no rows drawn
+  under the banner, and a bulk write whose scope you cannot see is exactly what the
+  confirm step exists to prevent. The banner's count is not a substitute — it says how
+  many, not which.
+
+#### Collapsed by default, except the ones that are yours
+
+Both project views fold, and both open **the projects you are answerable for** and
+nothing else. Asked for as *"make project collapsable; default view is uncollapsed for
+project ur responsible for"*, and it is two halves on two pages.
+
+The Roadmap's lanes were **already** collapsible and defaulted to all-shut, which is
+right for a stranger and wrong for everybody else: the lane you are DRI on is the
+reason you opened the page, and finding it behind a chevron every time is a hunt down
+a list of nine. The Board's banners were **not** collapsible at all, and nine sections
+of five columns is a page nobody reaches the bottom of.
+
+- **"Responsible for" means DRI *or* Support** — `isResponsibleFor` in
+  `utils/projects.ts`. The pair exists so no lane has a single point of failure (the
+  same reason `assignmentsByPerson` records both roles even when one person holds
+  both), so opening only your DRI lanes would hide the half you are most likely to
+  have forgotten. Compared **lower-cased**, because these are addresses and not keys.
+- **A null email never matches a null field.** Without that guard every unowned lane
+  would spring open for every signed-out viewer.
+- **Owning a phase inside a lane does not count.** That is a dated piece of work with
+  a bar of its own, answered by the Team page's per-person chart; this question is
+  about the lane, not a stretch of it.
+- **The Board adds two rules, in `defaultOpenGroups` (`utils/tasks.ts`).** A section
+  also opens if **you own a card in it** — on a board that outranks the lane's roles,
+  and it is what keeps *filter by owner: me* from leaving every section shut, which
+  reads as no results — and the **unattached section always opens**, because it has no
+  project and therefore no DRI, so no rule about responsibility could ever reach it.
+- **Seeded once, in an effect, guarded by a `useRef`.** It cannot be a `useState`
+  initialiser: neither the projects nor the identity exist at mount, one coming from
+  `/api/roadmap` and the other from `/api/me`. And it must not re-run — the seed is an
+  **opening position, not a rule the page keeps enforcing**, so without the one-shot
+  guard "Collapse all" would spring back the moment anything else re-rendered.
+- **Gated on `identity !== null`, which means "`/api/me` has answered"** and not
+  "somebody is signed in". Seeding before that lands would open nothing, burn the
+  one-shot, and leave the page in the all-collapsed state this replaces. If `/api/me`
+  never answers, nothing is seeded — the correct failure, since guessing would either
+  open all nine or claim a responsibility that is not ours to claim.
+- **The Board seeds from the UNFILTERED board.** Which sections are yours is a fact
+  about the projects and about who owns what, not about the toolbar; seeding from the
+  filtered sections would make the opening position depend on whatever filter happened
+  to be set.
+- **The Board reuses the chart's `Disclosure`**, not a second arrow of its own. The
+  banner already borrows the phase row's blush ground and pink rule on purpose, and
+  the control that opens a lane on the Roadmap should be the control that opens a
+  section here. Vite now emits `parts-*.js` as a chunk shared by both pages.
+- **Expand all / Collapse all is in both toolbars**, and on the Board it measures
+  itself against the sections **on screen** — a filtered board's button has to describe
+  the board in front of you. The cost is that "Collapse all" leaves a section open if a
+  filter is currently hiding it, and it reopens where it was when the filter comes off.
+
+Proved in a headless browser against `demo.py` signed in as a seeded roster address,
+by reading each disclosure's own `aria-expanded` **and counting the columns actually
+drawn** — "the arrow says open" and "the board underneath exists" are two claims and
+only the second one matters. As Jordan (DRI *and* Support on QWAPP, owner of one card
+on Tax): QWAPP open and eight lanes shut on the Roadmap; on the Board, QWAPP open by
+role, Tax open by ownership, "Not tied to a project" open by rule, Net Of Fees shut
+with zero columns and no assign-all. Collapse all then stayed collapsed, which is the
+one-shot guard doing its job.
+
+#### A deleted `project_id` is not the same as no project
+
+`src/utils/projects.ts` exists because a task attached to a deleted project and a
+task attached to nothing are **different facts**. Rendering a blank for both makes
+the deliberate case look like data loss and the data loss look deliberate. So
+`resolveProjectName` falls back to `Unknown project (<id>)`, and the label lives in
+one function rather than the three places it was previously spelled.
+
+`projectOptions` is the other half, and it fixes a bug that is invisible on screen:
+**a select whose value matches no option reports `selectedIndex: -1` and draws
+empty, while React Hook Form keeps its own copy of the value and submits it
+anyway.** The editor looked like it had lost the project and would have written the
+dead id straight back. It appends a trailing option for any current value with no
+live project — last, so it never displaces a real choice. `RfcEditor` had the same
+latent bug and now shares the fix.
 
 ### Audit
 
@@ -983,7 +1394,7 @@ similar obligation.
 
 ```bash
 (cd fast && python3 -m venv venv && ./venv/bin/pip install -r requirements-dev.txt)
-(cd fast && ./venv/bin/python -m pytest tests -q)      # 176 tests, moto-backed
+(cd fast && ./venv/bin/python -m pytest tests -q)      # 435 tests, moto-backed
 (cd fast && ./venv/bin/python demo.py)                  # seeded demo, no AWS at all
 (cd fast && ./run.sh)                                   # needs real AWS creds + tables
 ```
@@ -992,7 +1403,7 @@ similar obligation.
 to do so without a token — the deployed API keeps `/docs` behind the authorizer,
 because the OpenAPI schema names every route and field and that is not something to
 publish just because it is convenient for a browser. It runs moto in-process,
-creates the three tables in memory, loads `roadmap.json`, and serves on :8000.
+creates the four tables in memory, loads `roadmap.json`, and serves on :8000.
 Nothing touches AWS and the data dies with the process.
 
 Owner addresses in the demo are `@example.invalid` — RFC 2606 reserved, so they can
@@ -1057,6 +1468,78 @@ be cleared before anyone is shown the tool**, not carried forward. (This used to
 enforceable — the gap report counted a placeholder as a filled slot — but that report
 has been removed, so nothing catches it now.)
 
+### Importing from Jira and Confluence
+
+Both are **one-time ports, already run**. Neither writes to Atlassian, neither syncs,
+and there is no `jira_key` or `confluence_page_id` column — a field supporting a sync
+that was explicitly not built is wrong within the month. Provenance goes in the body
+instead: every imported row ends with the source key, the URL, and what the source
+claimed about itself at the moment it was read.
+
+```bash
+(cd fast && ./venv/bin/python -m app.seeds.load_jira_tasks \
+    --export /tmp/jira_export.json --allow-unmapped)             # dry run
+(cd fast && ./venv/bin/python -m app.seeds.load_confluence_rfcs \
+    --export /tmp/confluence_rfcs --allow-unmapped)              # dry run
+```
+
+**What landed**: 287 tasks (231 top-level / 56 subtasks) from Jira, and 11 RFCs from
+Confluence, 4 of them owned by `thomas@qwealth.com`. Verified against the table rather
+than the loaders' own output: no dangling `parent_id`, nothing nested deeper than one
+level, no leftover ADF, every row traceable to its source page or issue.
+
+Three decisions worth knowing before touching either loader:
+
+- **Jira status collapses by `statusCategory`, not by name.** The category keys
+  (`new` / `indeterminate` / `done`) are stable across workflows; the per-project status
+  *names* are not. So Architecting, Wireframing, Testing, Blocked/Hold and Code Review
+  all become `in-progress`, and the original name survives in the body. An unknown
+  category is a hard stop, not a shrug onto backlog.
+- **Neither loader invents an owner.** Jira withholds `emailAddress` site-wide on this
+  instance (298 of 304 null) and Confluence gives display names only. 281 tasks
+  therefore have no owner, and the display name goes in the body. The one exception is
+  `AUTHOR_EMAIL` in the RFC loader, four pages, and `check_author_roster()` makes the
+  people table veto it before anything is written.
+- **`SKIP_PAGES` and `PAGE_STATUS` are human judgements recorded in code**, with the
+  sentence from the page that decided each one, rather than patched into the export.
+  Four of the fifteen exported pages are an audit, an execution plan, a conventions
+  guide and a description of shipped behaviour — useful documents, none of them a
+  decision record. The export stays a faithful copy of Confluence; the judgement is
+  reviewable and arguable in the diff.
+
+**`clean_adf` in `seeds/atlassian.py` is the one place any of this rewrites somebody's
+text**, and it is deliberately narrow. Atlassian leaks `<custom data-type="mention">…`
+wrappers into both Jira descriptions and Confluence bodies, and `react-markdown` v9
+without `rehype-raw` **escapes** unknown tags rather than dropping them — measured with
+a real render, not assumed; the first guess was the opposite and it was wrong. But a
+blanket tag strip would have been data loss: these documents contain `<uuid>`,
+`<filename>`, `<write table details here>`, `<optional int FK>` and whole JSX snippets
+as content. So the regex matches `<custom data-type=` and nothing else, and half of
+`tests/test_atlassian_markup.py` asserts what it must **not** touch.
+
+**The footer's whitespace is load-bearing, and this is the lesson worth keeping.**
+`text\n---` is a **setext H2** in markdown, not a paragraph followed by a rule. The
+footer opened with a single newline, so all 298 imported rows rendered the closing
+sentence of their description as a large heading and showed no separator at all. The
+footer's own facts, as consecutive plain lines, were one paragraph and ran together
+into an unreadable sentence.
+
+**419 tests passed throughout.** Every one of them asserted a substring — `"A-1" in
+body`, `"browse/A-1" in body` — and a substring survives a whitespace bug perfectly
+intact. It was found by rendering a real stored body through react-markdown and reading
+the HTML, which is the only thing that could have found it. There are now tests that
+assert *shape* (`"sentence.\n\n---\n" in body`, and `"sentence.\n---" not in body`),
+and `footer()` lives in `seeds/atlassian.py` so the two loaders cannot drift apart.
+**When a change is about how something renders, render it.**
+
+`fix_adf_bodies.py` repairs both defects in rows already written: 59 bodies for the ADF
+wrappers, then 298 for the footer. It is idempotent, covers tasks and RFCs, and is
+scoped to `created_by in ("jira-import", "confluence-import")` — so a body somebody
+typed in the app is outside its blast radius. The footer fix is anchored on the
+importer's own `Imported from …` line rather than on the markup, because `text\n---` in
+a human's document is a heading they meant to write. `tests/test_fix_adf_bodies.py` has
+a whole class for what it must not touch.
+
 ---
 
 ## Running the frontend
@@ -1081,7 +1564,7 @@ something on :8000 alongside it. Two choices, and the difference matters:
 | --- | --- |
 | `npm run dev` | Vite dev server |
 | `npm run build` | `tsc -b && vite build` → `dist/` |
-| `npm test` | vitest, 71 tests |
+| `npm test` | vitest, 219 tests |
 | `npm run type-check` | `tsc --noEmit` |
 
 ### Things that will bite
@@ -1139,6 +1622,77 @@ something on :8000 alongside it. Two choices, and the difference matters:
   called once per session. Page state is deliberately *not* hoisted with it —
   switching tabs refetches, which is right for a board several people edit at once.
 
+### Dark mode
+
+Black and pink, **taken from the OS and nothing else**. No toggle, no icon, no stored
+preference, no `matchMedia` listener, no `ThemeProvider` — one
+`@media (prefers-color-scheme: dark)` block, following the `prefers-reduced-motion`
+precedent already in `ui.ts`.
+
+The mechanism is in `src/styles/theme.ts`. Every colour is a `[light, dark]` pair in
+`TOKENS`, and `palette.x` is no longer a hex string but the string `var(--c-x)`. That is
+the whole reason this was a small change: **271 interpolations across 27 files kept
+working untouched**, because they were already `${palette.border}` and still are. The
+variable name is *derived* from the key (`hotPink` → `--c-hot-pink`), so the two
+spellings cannot drift apart. `themeVars` emits both blocks and is interpolated at the
+top of `GlobalStyle` — first in the file, because a custom property must be declared on
+an ancestor before anything can read it. `shadow.*` works the same way.
+
+Two rules decide every value, and they are the ones to defend in review:
+
+1. **The chrome inverts, the data does not.** `STATE_STYLE` — the five lifecycle fills —
+   is deliberately *not* routed through `palette`; it holds literal hex and is
+   identical in both themes. A bar's colour is the project's state, so a legend swatch
+   must match the bar it explains and a screenshot must mean the same thing in either
+   theme. Routing `STATE_STYLE` through the palette is the obvious wrong turn here; a
+   browser check asserts the Coding fill is `rgb(224, 33, 138)` both ways.
+2. **What sits on a pink fill flips with the fill.** Light mode's accent is *darker*
+   than the page, dark mode's is *lighter*, so white-on-pink breaks in dark. Hence the
+   `onAccent` token — white in light, near-black `#1A0510` in dark — used at the ~8
+   places a label sits on a saturated fill (active nav tab, primary button, role chip,
+   today badge, heavy-load chip, three-star chip). It exists because `deepMagenta` is a
+   *fill under white text* in light mode and *accent text* in dark, which is a genuine
+   collision and not a naming problem.
+
+`color-scheme: light dark` on `:root` hands the native controls over too — scrollbars,
+the select dropdown, the wants-to-learn checkbox, the caret. Without it those stay white
+on an otherwise black page.
+
+**The three `rgba(255,255,255,…)` left in `SegmentedBar.tsx` are correct and must stay.**
+They are the hatching and the band hairline, drawn *on a lifecycle fill*, which is the
+same in both themes — so they have no relationship with the page behind them. Making
+them ink-coloured would put a dark hatch on a bright pink bar to match a background it
+never touches.
+
+**The sign-in gate is not our markup, and that is where this nearly shipped broken.**
+`LoginGate.tsx` remaps Amplify's design tokens, and those remaps *do* inherit —
+`--amplify-colors-font-primary` computes to our ink on every node inside the shell. The
+inputs were still drawn in `hsl(210 50% 10%)` anyway, because **Amplify declares its
+component tokens at `:root`** (`--amplify-components-fieldcontrol-color:
+var(--amplify-colors-font-primary)`), and a custom property's `var()` is substituted
+**where it is declared, not where it is used**. The substitution had already happened
+against Amplify's default palette before our override on a descendant was ever visible.
+Adding more `--amplify-colors-*` remaps cannot fix that; only overriding the component
+token, or setting the property outright, can. So `.amplify-label`, `.amplify-input`, the
+show-password toggle and `.amplify-button--primary` now set `color` directly.
+
+In light mode the bug was invisible — Amplify's near-black on our white is merely the
+*wrong* near-black. In dark mode it was a **1.15:1 input and a 1.79:1 label on a black
+card**: a sign-in form nobody can read, on the first screen a user sees. Nothing in the
+type-check, the 219 unit tests or the authenticated route sweep could catch it, because
+the sweep runs signed in and never renders the gate at all. **A screen the automated
+sweep cannot reach needs its own check** — that is the general lesson, not the Amplify
+specific.
+
+Verified by reading **computed** styles under `page.emulateMedia({ colorScheme })` and
+computing WCAG contrast in-page, rather than screenshotting and squinting — "dark enough
+to look right" and "readable" are different questions and only the second has an answer.
+Ink on ground is 15.77:1 light and 17.22:1 dark; a sweep of all four routes found zero
+text under 3:1. One **pre-existing** wrinkle the sweep surfaced and dark mode did not
+cause: the light theme's active nav tab is white on PANTONE 219 C at **4.42:1**, just
+under AA for body text. Dark mode's is 6.69:1. Fixing it means moving a brand colour, so
+it is flagged rather than silently changed.
+
 ### Lane colour precedence
 
 `src/utils/phaseState.ts`. The lane takes the colour of the **highest-ranked
@@ -1189,6 +1743,34 @@ Milestone dates widen the chart's span, in `RoadmapPage.tsx` as well as in the A
 `span_start`/`span_end`. Both, or the two disagree the moment somebody edits a date —
 and a deadline set past the last phase is exactly the thing that must not fall off the
 right-hand edge.
+
+### The gridline overlay paints over everything, and what has to opt out
+
+`Overlay` in `ChartCanvas.tsx` draws the week gridlines and the today line **once**,
+over the whole lane stack, and is rendered *before* `{children}`. Because it is
+`position: absolute` and the rows are not positioned at all, it paints **above every
+row** whatever the source order says. Over a bar that is the whole point — the today
+line has to read as being in front of the work it crosses, and `pointer-events: none`
+is there so it does not swallow clicks on the bar people most want to click.
+
+Over a **form** it is wrong, and it was: open a phase editor and the gridlines ran
+straight through the labels, the inputs and the Save button. The fix is in
+`parts.ts` — `EditorRow` and `AddRow` carry `position: relative; z-index: 1`.
+
+Two things about that are easy to get wrong later:
+
+- **The `position` is load-bearing, not decoration.** `z-index` is ignored on a
+  static element, so `z-index: 1` on its own changes nothing at all.
+- **So is the background.** Lifting a transparent row above the overlay lets the
+  lines show through regardless. `EditorRow` is opaque `palette.card`, so the form
+  is clean. `AddRow` keeps its translucent tint **on purpose**, so the gridlines go
+  on running through the empty part of it and it still matches the `PhaseRow` above;
+  what the lift buys there is that they no longer cross the buttons, which have an
+  opaque background of their own.
+
+Anything new that renders *content* rather than a *track* inside `ChartCanvas` needs
+the same two properties. `TeamChart` needs none of this today — it is read-only, and
+every row it draws is a track.
 
 ### The Team Gantt: the same chart, transposed
 

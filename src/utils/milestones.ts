@@ -35,9 +35,16 @@
  * which is exactly what this app exists to stop. The cluster takes the most urgent
  * status among its members, so a missed deadline cannot be concealed by a completed
  * one sharing its date, and the renderer prints the count next to it.
+ *
+ * UNDER A PHASE, OR UNDER THE LANE
+ * --------------------------------
+ * A milestone may name the phase it belongs to, and may name none. `placeMilestones`
+ * answers where each one is listed when the lane is opened; the COLLAPSED lane
+ * deliberately does not care, because a diamond's position is its date and a date
+ * does not change by being filed under Infra.
  */
 
-import type { Milestone } from '../types';
+import type { Milestone, Phase } from '../types';
 import { formatLong } from './dates';
 
 export type MilestoneStatus =
@@ -158,6 +165,63 @@ export function sortMilestones(milestones: Milestone[]): Milestone[] {
     }
     return a.date.localeCompare(b.date);
   });
+}
+
+/** Where each of a lane's milestones gets listed when the lane is opened. */
+export interface MilestonePlacement {
+  /** phase_id -> the milestones filed under it, sorted. Only phases that have any. */
+  byPhase: Map<string, Milestone[]>;
+  /** The ones listed against the lane itself, sorted. */
+  onLane: Milestone[];
+}
+
+/**
+ * Split a lane's milestones into the ones that sit under a phase and the rest.
+ *
+ * A milestone MAY name the phase it belongs to and may name none, and both are
+ * ordinary: "Infra hardening signed off" is a moment inside Infra, while "Regulatory
+ * deadline" is a date the whole lane answers to and is not a step in any one stage of
+ * it. So this returns two things rather than one grouping, and the caller draws the
+ * attached ones directly beneath their phase and the unattached ones under the lane.
+ *
+ * A MILESTONE WHOSE PHASE IS NOT IN THIS LIST FALLS BACK TO THE LANE
+ * ------------------------------------------------------------------
+ * It is not dropped, and the reason is the same one that keeps a subtask with a
+ * dangling parent_id on the board: the server has already decided. Deleting a phase
+ * detaches its milestones rather than deleting them, so a phase_id in hand that
+ * matches no phase means this payload is stale - and the lane is where the row is
+ * about to end up anyway. Filtering it out instead would make a commitment vanish
+ * from the only screen that lists it, which is the failure this app exists to end.
+ *
+ * Sorted with sortMilestones on both sides, so a milestone attached through the form
+ * lands in date order under its new phase without waiting for a refetch.
+ */
+export function placeMilestones(
+  milestones: Milestone[],
+  phases: readonly Phase[]
+): MilestonePlacement {
+  const known = new Set(phases.map((phase) => phase.phase_id));
+  const byPhase = new Map<string, Milestone[]>();
+  const onLane: Milestone[] = [];
+
+  for (const milestone of milestones) {
+    const phaseId = milestone.phase_id;
+    if (!phaseId || !known.has(phaseId)) {
+      onLane.push(milestone);
+      continue;
+    }
+    const existing = byPhase.get(phaseId);
+    if (existing) {
+      existing.push(milestone);
+    } else {
+      byPhase.set(phaseId, [milestone]);
+    }
+  }
+
+  for (const [phaseId, group] of byPhase) {
+    byPhase.set(phaseId, sortMilestones(group));
+  }
+  return { byPhase, onLane: sortMilestones(onLane) };
 }
 
 /**

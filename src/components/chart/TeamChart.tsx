@@ -83,7 +83,7 @@ const RoleBand = styled.div<{ $left: number; $width: number; $dri: boolean }>`
   min-width: 3px;
   height: 34px;
   border-radius: ${radius.sm};
-  background: ${(p) => (p.$dri ? 'rgba(224, 33, 138, 0.07)' : 'rgba(180, 162, 172, 0.10)')};
+  background: ${(p) => (p.$dri ? palette.pinkWash : palette.slateWash)};
   /* Solid for the DRI, dashed for Support. The two roles differ in accountability,
      not in shade, and a dashed edge says "backing somebody up" without needing the
      legend or a second colour. */
@@ -108,7 +108,7 @@ const NoDates = styled.span`
 
 const Load = styled(Chip)<{ $heavy: boolean }>`
   flex: none;
-  color: ${(p) => (p.$heavy ? '#ffffff' : palette.deepMagenta)};
+  color: ${(p) => (p.$heavy ? palette.onAccent : palette.deepMagenta)};
   background: ${(p) => (p.$heavy ? palette.hotPink : palette.blush)};
   border-color: ${(p) => (p.$heavy ? palette.hotPink : palette.border)};
 `;
@@ -131,7 +131,7 @@ const BandSwatch = styled.span<{ $dri: boolean }>`
   width: 26px;
   height: 14px;
   border-radius: ${radius.sm};
-  background: ${(p) => (p.$dri ? 'rgba(224, 33, 138, 0.07)' : 'rgba(180, 162, 172, 0.10)')};
+  background: ${(p) => (p.$dri ? palette.pinkWash : palette.slateWash)};
   border: 1px ${(p) => (p.$dri ? 'solid' : 'dashed')}
     ${(p) => (p.$dri ? palette.borderStrong : palette.slate)};
 `;

@@ -55,6 +55,61 @@ class DynamoDBStack(cdk.Stack):
             table_name="planning-roadmap-people",
         )
 
+        # RFCs and tasks: everything that is written down but is not on the Gantt.
+        #
+        # A SEPARATE TABLE, for two concrete reasons rather than tidiness:
+        #
+        # 1. `list_projects` scans the projects table whole and groups in memory. Put
+        #    RFCs and tasks in there and every roadmap load reads and discards them,
+        #    so the chart gets slower in proportion to how much the team writes down -
+        #    two things that should have nothing to do with each other.
+        # 2. In that table `project_id` is the PARTITION KEY, so "an RFC attached to
+        #    no project" is unrepresentable without inventing a sentinel partition.
+        #    Here project_id is an ordinary nullable attribute and the answer is just
+        #    null, which is the rule the rest of this app already runs on.
+        #
+        # One table for both kinds rather than two, because an RFC and a task differ
+        # by about four fields and share every access pattern. `kind` discriminates.
+        #
+        # `sk` is fixed at "#ITEM" today and nothing reads it. It is here because a
+        # sort key cannot be added to a live table, only migrated to, and an RFC in
+        # state "In review" implies reviewers, which implies comments, which need a
+        # child row. The projects table taught that lesson once already; the second
+        # key costs nothing until it is needed and cannot be retrofitted when it is.
+        self.work_table = dynamodb.Table(
+            self,
+            "WorkTable",
+            partition_key=dynamodb.Attribute(name="item_id", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            # RETAIN for the same reason the projects table is. An RFC is the written
+            # record of a decision and the reasoning behind it, which is the least
+            # reproducible thing in this account.
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+            table_name="planning-roadmap-work",
+        )
+
+        # "every RFC" / "every task", one Query each. Name must match
+        # config.WORK_BY_KIND_INDEX.
+        #
+        # Two partitions for the whole table, which is a hot-partition shape and is
+        # deliberate here: this is an internal board for one team, the ceiling is
+        # hundreds of rows, and a partition holds 10GB of text before it complains.
+        # Sorting on updated_at means the list pages get "most recently touched first"
+        # out of the key schema rather than out of an in-memory sort.
+        #
+        # Deliberately NO second index on project_id. "What is attached to this
+        # project" filters the kind query in memory - the same call list_projects
+        # already makes, correct at the same scale. Add the index when one kind stops
+        # fitting in a page or two, not before.
+        self.work_table.add_global_secondary_index(
+            index_name="kind-updated-index",
+            partition_key=dynamodb.Attribute(name="kind", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="updated_at", type=dynamodb.AttributeType.STRING),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+
         # Audit log, partitioned on the thing that changed.
         #
         # Deliberately NOT the marketing tool's shape, and its own config.py records
@@ -97,6 +152,7 @@ class DynamoDBStack(cdk.Stack):
         for name, table in (
             ("ProjectsTableName", self.projects_table),
             ("PeopleTableName", self.people_table),
+            ("WorkTableName", self.work_table),
             ("AuditTableName", self.audit_table),
         ):
             cdk.CfnOutput(self, name, value=table.table_name)

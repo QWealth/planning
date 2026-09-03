@@ -72,7 +72,7 @@ export const Swatch = styled.span<{ $fill: string }>`
   height: 12px;
   border-radius: ${radius.pill};
   background: ${(p) => p.$fill};
-  border: 1px solid rgba(46, 21, 36, 0.12);
+  border: 1px solid ${palette.hairline};
 `;
 
 const DiamondSwatch = styled.span<{ $fill: string }>`

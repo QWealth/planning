@@ -184,7 +184,7 @@ export const TodayFlag = styled.div<{ $leftPct: number }>`
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: #ffffff;
+    color: ${palette.onAccent};
     background: ${palette.today};
     border-radius: ${radius.pill};
     padding: 2px 8px;
@@ -204,7 +204,7 @@ export const LaneRow = styled(Row)`
   transition: background-color 120ms ease;
 
   &:hover {
-    background: rgba(224, 33, 138, 0.04);
+    background: ${palette.pinkWash};
   }
 `;
 
@@ -212,8 +212,8 @@ export const PhaseRow = styled(Row)`
   min-height: ${PHASE_HEIGHT}px;
   /* Phase rows read as a nested block, so they get a tinted ground and a pink rule
      down the left of the label column to tie them to the lane above. */
-  background: rgba(255, 214, 236, 0.28);
-  border-bottom: 1px solid rgba(244, 201, 223, 0.7);
+  background: ${palette.banner};
+  border-bottom: 1px solid ${palette.border};
 `;
 
 export const LaneLabelCell = styled.div`
@@ -224,12 +224,26 @@ export const LaneLabelCell = styled.div`
   min-width: 0;
 `;
 
-export const PhaseLabelCell = styled.div`
+/**
+ * The label column of a nested row: a phase, or a milestone.
+ *
+ * `$nested` is the second step in, and it is what says a milestone belongs to the
+ * phase above it rather than to the lane. Indentation is the only device available:
+ * the rows are cells of one CSS grid, so the milestone cannot be drawn INSIDE the
+ * phase's row, and a 22px shift plus its own left rule is what reads as "under
+ * this" in a list that is already one level deep.
+ *
+ * A second rule was tried and dropped - two vertical lines 22px apart down every
+ * lane turned the label column into a ledger. One rule, moved right, is enough,
+ * because the diamond in front of a milestone's name already distinguishes the kind
+ * of row from the phase above it.
+ */
+export const PhaseLabelCell = styled.div<{ $nested?: boolean }>`
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 4px 12px 4px 4px;
-  margin-left: 22px;
+  margin-left: ${(p) => (p.$nested ? 44 : 22)}px;
   border-left: 2px solid ${palette.border};
   min-width: 0;
 `;
@@ -391,8 +405,24 @@ export const MoveButton = styled.button`
   }
 `;
 
-/** Row that spans both columns, for an open editor. */
+/**
+ * Row that spans both columns, for an open editor.
+ *
+ * `position: relative; z-index: 1` is what keeps the week gridlines and the today
+ * line off the form. Overlay is absolutely positioned over the whole lane stack and
+ * is rendered BEFORE the rows, so as a positioned element it paints above every
+ * non-positioned row regardless of source order. Over a bar that is the entire
+ * point - the today line has to read as being in front. Over a text input it is
+ * just a stripe through the middle of the word you are typing.
+ *
+ * A z-index alone would do nothing: z-index is ignored on a static element, so the
+ * `position` is load-bearing rather than incidental. The opaque `background` is the
+ * other half of it - lifting a transparent row above the overlay would let the
+ * lines show straight through anyway.
+ */
 export const EditorRow = styled.div`
+  position: relative;
+  z-index: 1;
   border-bottom: 1px solid ${palette.border};
   background: ${palette.card};
   box-shadow: ${shadow.inset};
@@ -404,8 +434,16 @@ export const EditorRow = styled.div`
  * Indented to the same 22px as PhaseLabelCell and carrying the same left rule, so it
  * reads as the last item of the nested block rather than as a control belonging to
  * the next lane down.
+ *
+ * Lifted above the gridline overlay for the same reason EditorRow is - see the note
+ * there. The row's own tint stays deliberately translucent, so the gridlines still
+ * run through the empty part of it and it goes on matching the PhaseRow above; what
+ * the lift buys is that they no longer cross the buttons, which carry an opaque
+ * background of their own.
  */
 export const AddRow = styled.div`
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -413,8 +451,8 @@ export const AddRow = styled.div`
   padding: 6px 12px 8px 26px;
   margin-left: 22px;
   border-left: 2px solid ${palette.border};
-  border-bottom: 1px solid rgba(244, 201, 223, 0.7);
-  background: rgba(255, 214, 236, 0.28);
+  border-bottom: 1px solid ${palette.border};
+  background: ${palette.banner};
 `;
 
 /**
@@ -486,8 +524,8 @@ export const UnscheduledStrip = styled.div`
   border-radius: ${radius.pill};
   background: repeating-linear-gradient(
     135deg,
-    rgba(180, 162, 172, 0.16) 0,
-    rgba(180, 162, 172, 0.16) 6px,
+    ${palette.slateWash} 0,
+    ${palette.slateWash} 6px,
     transparent 6px,
     transparent 12px
   );

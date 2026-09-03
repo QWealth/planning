@@ -20,6 +20,22 @@
  *   a missed deadline and the chart says so in red; deriving one from the other would
  *   quietly mark every slipped commitment as achieved. See utils/milestones.ts.
  *
+ *   `phase_id: null` DETACHES the milestone from its phase, and is what the select's
+ *   first option sends. It means "this belongs to the lane, not to that stage" - the
+ *   commonest shape a milestone has, not a cleared field.
+ *
+ * THE PHASE IS OPTIONAL, AND THE SELECT SAYS SO FIRST
+ * ---------------------------------------------------
+ * "Not tied to a phase" is the leading option and the default, because it is the
+ * honest answer for most milestones: "Regulatory deadline" is a date the whole lane
+ * answers to, not a step inside Infra. Making the attachment required would file
+ * every such date under whichever phase happened to be nearest, and that phase would
+ * then look like it owned a commitment nobody gave it.
+ *
+ * The list is the project's OWN phases, passed in rather than fetched, because the API
+ * refuses a phase from another project - and a select that can offer a 400 is a select
+ * that will eventually produce one.
+ *
  * Deletion is a real delete, and is the one destructive action on the roadmap.
  * Soft-deleting a milestone would be worse than useless: an inactive one still has a
  * date, so it would keep counting towards the gap report and the missed tally while
@@ -42,8 +58,9 @@ import {
   Label,
   PrimaryButton,
   SecondaryButton,
+  Select,
 } from '../styles/ui';
-import type { Milestone, MilestonePatch } from '../types';
+import type { Milestone, MilestonePatch, Phase } from '../types';
 
 interface FormValues {
   name: string;
@@ -51,11 +68,19 @@ interface FormValues {
   date: string;
   note: string;
   done: boolean;
+  /** A phase_id, or '' for "not tied to a phase". '' is the null, as with `date`. */
+  phase_id: string;
 }
 
+/*
+  Four columns now the phase picker is here, not three. The picker sits beside the
+  date because the two answer the same kind of question - where in the plan this sits -
+  and because putting it on its own row below would leave the note stranded next to a
+  gap.
+*/
 const Form = styled.form`
   display: grid;
-  grid-template-columns: minmax(180px, 1.3fr) 150px minmax(200px, 1.4fr);
+  grid-template-columns: minmax(170px, 1.2fr) 150px minmax(150px, 1fr) minmax(180px, 1.3fr);
   gap: 12px 14px;
   align-items: start;
   padding: 14px 16px 16px 30px;
@@ -101,11 +126,24 @@ export function buildMilestonePatch(
   if (dirty.done) {
     patch.done = values.done;
   }
+  if (dirty.phase_id) {
+    // '' is the select's "Not tied to a phase", and it has to go out as a real null.
+    // Sent as an empty string it would be a phase id that passes a truthy check and
+    // matches nothing; the API normalises it too, but relying on that would leave the
+    // patch body lying about what it means.
+    patch.phase_id = values.phase_id || null;
+  }
   return patch;
 }
 
 export type MilestoneEditorProps = {
   projectId: string;
+  /**
+   * The project's own phases, for the picker. Empty is fine and normal - a lane with
+   * no phases yet still has deadlines - and the select then offers only "Not tied to
+   * a phase", which is the truth rather than a disabled control.
+   */
+  phases: readonly Phase[];
   /** Both endpoints answer with a whole MilestoneOut, so one callback covers both. */
   onSaved: (milestone: Milestone) => void;
   onCancel: () => void;
@@ -115,7 +153,7 @@ export type MilestoneEditorProps = {
 );
 
 export default function MilestoneEditor(props: MilestoneEditorProps) {
-  const { milestone, projectId, onSaved, onCancel } = props;
+  const { milestone, projectId, phases, onSaved, onCancel } = props;
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -130,8 +168,17 @@ export default function MilestoneEditor(props: MilestoneEditorProps) {
       date: milestone?.date ?? '',
       note: milestone?.note ?? '',
       done: milestone?.done ?? false,
+      phase_id: milestone?.phase_id ?? '',
     },
   });
+
+  // A milestone attached to a phase this list does not contain. Only reachable with a
+  // stale payload - the API detaches on phase delete - but the option is offered
+  // anyway, because a select whose value matches none of its options silently shows
+  // the first one, which here would read as "not tied to a phase" and would write
+  // exactly that the next time anybody saved the form. Same guard as PhaseEditor's
+  // owner select.
+  const knownPhase = phases.some((p) => p.phase_id === milestone?.phase_id);
 
   const onSubmit = handleSubmit(async (values) => {
     setError(null);
@@ -143,6 +190,7 @@ export default function MilestoneEditor(props: MilestoneEditorProps) {
             date: values.date || null,
             note: values.note.trim() || null,
             done: values.done,
+            phase_id: values.phase_id || null,
           })
         );
         return;
@@ -197,6 +245,30 @@ export default function MilestoneEditor(props: MilestoneEditorProps) {
             to get past the form, which is how the workbook filled up with schedules
             nobody believed. */}
         <Hint>Blank if nobody has committed yet. It is listed as still to decide.</Hint>
+      </Label>
+
+      <Label>
+        Part of
+        <Select {...register('phase_id')}>
+          {/* First and default. Belonging to the lane as a whole is the ordinary
+              answer, not the fallback, and a picker that leads with a phase invites
+              somebody to file a company-wide deadline under whichever stage is at the
+              top of the list. */}
+          <option value="">Not tied to a phase</option>
+          {!knownPhase && milestone?.phase_id ? (
+            <option value={milestone.phase_id}>{milestone.phase_id} (phase not found)</option>
+          ) : null}
+          {phases.map((phase) => (
+            <option key={phase.phase_id} value={phase.phase_id}>
+              {phase.name}
+            </option>
+          ))}
+        </Select>
+        <Hint>
+          {phases.length === 0
+            ? 'This lane has no phases yet, so it belongs to the project.'
+            : 'Optional. A deadline the whole project answers to belongs to no phase.'}
+        </Hint>
       </Label>
 
       <Label>

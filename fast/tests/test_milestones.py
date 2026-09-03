@@ -11,6 +11,7 @@ from app.db.models import (
     MILESTONE_SK_PREFIX,
     PHASE_SK_PREFIX,
     PROJECT_SK,
+    MilestoneModel,
 )
 from app.db.queries import projects as q
 from app.schemas.projects import MilestoneCreate, MilestoneOut, MilestoneUpdate
@@ -178,6 +179,226 @@ def test_delete_milestone(aws):
     assert q.get_project(project["project_id"])["milestones"] == []
 
 
+# -------------------------------------------------- under a phase, or under none
+def test_a_milestone_belongs_to_no_phase_by_default(aws):
+    """
+    The unattached case is the default, not the fallback.
+
+    "Regulatory deadline" is not a step inside any one stage of the work, and the
+    field being absent from a request has to mean exactly that rather than being
+    treated as an unfinished form.
+    """
+    project = q.create_project(name="Vault", milestones=[{"name": "Deadline"}])
+
+    assert project["milestones"][0]["phase_id"] is None
+    assert q.create_milestone(project["project_id"], {"name": "Go live"})["phase_id"] is None
+
+
+def test_a_milestone_can_name_a_phase_of_its_own_project(aws):
+    project = q.create_project(name="Vault", phases=[{"name": "Infra"}])
+    phase_id = project["phases"][0]["phase_id"]
+
+    created = q.create_milestone(
+        project["project_id"], {"name": "Infra hardening signed off", "phase_id": phase_id}
+    )
+
+    assert created["phase_id"] == phase_id
+    # And it survives the read path, not just the write's return value.
+    assert q.get_project(project["project_id"])["milestones"][0]["phase_id"] == phase_id
+
+
+def test_a_phase_id_naming_nothing_is_refused(aws):
+    """
+    There are no foreign keys, so this check is the only thing standing between a
+    typo and a milestone filed under a heading the chart never draws - stored,
+    returned by the API, visible nowhere.
+    """
+    project = q.create_project(name="Vault")
+
+    try:
+        q.create_milestone(project["project_id"], {"name": "Ship", "phase_id": "nope"})
+    except q.ValidationError:
+        pass
+    else:
+        raise AssertionError("a dangling phase_id must not be storable")
+
+
+def test_a_phase_from_another_project_is_refused(aws):
+    """
+    The reference is scoped to the project, not to "does this phase exist anywhere".
+
+    Phases are partitioned on project_id, so a phase id copied from another lane
+    would look real to a global existence check and resolve to nothing on the lane
+    that stored it. This is the mistake a copied id actually produces.
+    """
+    mine = q.create_project(name="Vault")
+    theirs = q.create_project(name="Tax", phases=[{"name": "Infra"}])
+    stolen = theirs["phases"][0]["phase_id"]
+
+    try:
+        q.create_milestone(mine["project_id"], {"name": "Ship", "phase_id": stolen})
+    except q.ValidationError:
+        pass
+    else:
+        raise AssertionError("a phase_id must name a phase of the SAME project")
+
+
+def test_patch_can_attach_then_detach(aws):
+    """
+    Both directions are ordinary edits, and null is the one that must not be dropped.
+
+    `"phase_id": null` means "this belongs to the project, not to that stage" - the
+    absent/null distinction the whole Update schema exists for. A queries layer that
+    tested `if changes.get("phase_id")` would silently ignore it.
+    """
+    project = q.create_project(name="Vault", phases=[{"name": "Infra"}], milestones=[{"name": "Ship"}])
+    phase_id = project["phases"][0]["phase_id"]
+    milestone_id = project["milestones"][0]["milestone_id"]
+    pid = project["project_id"]
+
+    attached = q.update_milestone(pid, milestone_id, {"phase_id": phase_id})
+    assert attached["phase_id"] == phase_id
+
+    detached = q.update_milestone(pid, milestone_id, {"phase_id": None})
+    assert detached["phase_id"] is None
+    assert detached["name"] == "Ship"
+
+
+def test_patch_leaves_an_unmentioned_phase_alone(aws):
+    """Renaming a milestone must not un-file it, same rule as the date."""
+    project = q.create_project(name="Vault", phases=[{"name": "Infra"}], milestones=[{"name": "Ship"}])
+    phase_id = project["phases"][0]["phase_id"]
+    pid, milestone_id = project["project_id"], project["milestones"][0]["milestone_id"]
+    q.update_milestone(pid, milestone_id, {"phase_id": phase_id})
+
+    updated = q.update_milestone(pid, milestone_id, {"name": "Ship it"})
+
+    assert updated["phase_id"] == phase_id
+
+
+def test_patch_of_another_field_tolerates_an_already_dangling_phase(aws):
+    """
+    Only a phase_id that was SENT is checked.
+
+    Validating the merged result - update_phase's pattern, and the wrong one here -
+    would re-check the stored attachment on every unrelated PATCH. A milestone left
+    pointing at a phase that went away by some other route would then refuse to have
+    its name fixed, punishing the wrong edit for a mess it did not make.
+    """
+    project = q.create_project(name="Vault", phases=[{"name": "Infra"}], milestones=[{"name": "Ship"}])
+    pid = project["project_id"]
+    phase_id = project["phases"][0]["phase_id"]
+    milestone_id = project["milestones"][0]["milestone_id"]
+    q.update_milestone(pid, milestone_id, {"phase_id": phase_id})
+
+    # Straight at the table, so the detach in delete_phase does not run. This is the
+    # hand-repaired state, not something the API can produce.
+    q.get_projects_table().delete_item(
+        Key={"project_id": pid, "sk": f"{PHASE_SK_PREFIX}{phase_id}"}
+    )
+
+    updated = q.update_milestone(pid, milestone_id, {"name": "Ship it"})
+
+    assert updated["name"] == "Ship it"
+    assert updated["phase_id"] == phase_id
+
+
+def test_an_empty_phase_id_means_no_phase(aws):
+    """
+    `""` is what a `<select>`'s "Not tied to a phase" option submits.
+
+    Left as an empty string it passes a truthy check, matches no phase, and would be
+    refused as a dangling reference - a 400 for what the person correctly answered as
+    "none". Normalised in the schema, so both create and patch get it.
+    """
+    assert MilestoneCreate(name="Ship", phase_id="").phase_id is None
+    assert MilestoneCreate(name="Ship", phase_id="   ").phase_id is None
+    assert MilestoneUpdate(phase_id="").changes() == {"phase_id": None}
+
+
+def test_deleting_a_phase_detaches_its_milestones(aws):
+    """
+    DELETING A PHASE PROMOTES ITS MILESTONES; IT DOES NOT TAKE THEM WITH IT.
+
+    A milestone is a commitment somebody made, and "we restructured the phases" is
+    not a decision to drop it. Leaving the id behind would be worse than either
+    option: the milestone would still exist and would group under a heading nothing
+    draws. Only the milestones of THAT phase move.
+    """
+    project = q.create_project(
+        name="Vault",
+        phases=[{"name": "Infra"}, {"name": "Build"}],
+        milestones=[{"name": "Hardened"}, {"name": "Built"}, {"name": "Deadline"}],
+    )
+    pid = project["project_id"]
+    infra, build = (p["phase_id"] for p in project["phases"])
+    by_name = {m["name"]: m["milestone_id"] for m in project["milestones"]}
+    q.update_milestone(pid, by_name["Hardened"], {"phase_id": infra})
+    q.update_milestone(pid, by_name["Built"], {"phase_id": build})
+
+    assert q.delete_phase(pid, infra) is True
+
+    after = {m["name"]: m["phase_id"] for m in q.get_project(pid)["milestones"]}
+    assert after == {"Hardened": None, "Built": build, "Deadline": None}
+
+
+def test_deleting_a_phase_leaves_another_project_alone(aws):
+    """Same guard as the create check, from the other side of the write."""
+    mine = q.create_project(name="Vault", phases=[{"name": "Infra"}])
+    theirs = q.create_project(name="Tax", phases=[{"name": "Infra"}], milestones=[{"name": "Ship"}])
+    q.update_milestone(
+        theirs["project_id"],
+        theirs["milestones"][0]["milestone_id"],
+        {"phase_id": theirs["phases"][0]["phase_id"]},
+    )
+
+    q.delete_phase(mine["project_id"], mine["phases"][0]["phase_id"])
+
+    still = q.get_project(theirs["project_id"])["milestones"][0]
+    assert still["phase_id"] == theirs["phases"][0]["phase_id"]
+
+
+def test_create_project_refuses_a_milestone_that_names_a_phase(aws):
+    """
+    There is no id a caller could have meant on this path.
+
+    The phases in the same request are getting their ids inside this call, so any
+    string sent here names a phase of some other project. Storing it would file the
+    milestone under a heading this lane never draws; ignoring it would accept the
+    request and lose the attachment. Neither is honest.
+    """
+    try:
+        q.create_project(
+            name="Vault",
+            phases=[{"name": "Infra"}],
+            milestones=[{"name": "Hardened", "phase_id": "guessed"}],
+        )
+    except q.ValidationError:
+        pass
+    else:
+        raise AssertionError("create_project must refuse a milestone's phase_id")
+
+
+def test_a_milestone_written_before_this_field_existed_reads_as_unattached(aws):
+    """
+    Absent and "attached to nothing" are the same fact here.
+
+    Every milestone in the table predates the field, so from_item has to answer for
+    an item with no such attribute. Unlike `date`, where absent and null would mean
+    different things, there is nothing to distinguish - so no migration is needed.
+    """
+    legacy = {
+        "project_id": "p1",
+        "sk": f"{MILESTONE_SK_PREFIX}m1",
+        "milestone_id": "m1",
+        "name": "Beta launch",
+        "date": "2026-09-01",
+        "done": False,
+    }
+
+    assert MilestoneModel.from_item(legacy)["phase_id"] is None
+
+
 # ------------------------------------------------------------------------ routes
 def test_route_create_update_delete(client):
     project = client.post("/api/projects", json={"name": "QWAPP"}).json()
@@ -260,6 +481,88 @@ def test_audit_records_the_milestone_change(client):
     # The cleared date has to survive as a real null in the snapshot, or the audit
     # trail cannot show that un-scheduling is what happened.
     assert update["after"]["date"] is None
+
+
+def test_route_attaches_a_milestone_to_a_phase(client):
+    project = client.post(
+        "/api/projects", json={"name": "QWAPP", "phases": [{"name": "Infra"}]}
+    ).json()
+    pid = project["project_id"]
+    phase_id = project["phases"][0]["phase_id"]
+
+    created = client.post(
+        f"/api/projects/{pid}/milestones",
+        json={"name": "Infra hardening signed off", "phase_id": phase_id},
+    )
+    assert created.status_code == 201
+    assert created.json()["phase_id"] == phase_id
+
+    # And "" from a select's "Not tied to a phase" option detaches rather than 400s.
+    detached = client.patch(
+        f"/api/projects/{pid}/milestones/{created.json()['milestone_id']}",
+        json={"phase_id": ""},
+    )
+    assert detached.status_code == 200
+    assert detached.json()["phase_id"] is None
+
+
+def test_route_400s_on_a_phase_id_that_is_not_this_projects(client):
+    """A 400 with a reason, not a stored row nothing draws."""
+    mine = client.post("/api/projects", json={"name": "QWAPP"}).json()
+    theirs = client.post(
+        "/api/projects", json={"name": "Tax", "phases": [{"name": "Infra"}]}
+    ).json()
+
+    response = client.post(
+        f"/api/projects/{mine['project_id']}/milestones",
+        json={"name": "Ship", "phase_id": theirs["phases"][0]["phase_id"]},
+    )
+
+    assert response.status_code == 400
+    assert "phase" in response.json()["detail"]
+
+
+def test_route_400s_on_a_created_project_whose_milestone_names_a_phase(client):
+    response = client.post(
+        "/api/projects",
+        json={
+            "name": "QWAPP",
+            "phases": [{"name": "Infra"}],
+            "milestones": [{"name": "Hardened", "phase_id": "guessed"}],
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_route_deleting_a_phase_audits_each_detached_milestone(client):
+    """
+    The detach is a real edit to a real row and gets its own audit entry.
+
+    Folding it into the phase's delete entry would make "why is this milestone no
+    longer under Infra" answerable only by somebody who already knew to go and read
+    a different entity's history.
+    """
+    project = client.post(
+        "/api/projects", json={"name": "QWAPP", "phases": [{"name": "Infra"}]}
+    ).json()
+    pid = project["project_id"]
+    phase_id = project["phases"][0]["phase_id"]
+    mid = client.post(
+        f"/api/projects/{pid}/milestones", json={"name": "Hardened", "phase_id": phase_id}
+    ).json()["milestone_id"]
+
+    assert client.delete(f"/api/projects/{pid}/phases/{phase_id}").status_code == 204
+
+    # The milestone survived the phase, unattached.
+    milestones = client.get(f"/api/projects/{pid}").json()["milestones"]
+    assert [(m["name"], m["phase_id"]) for m in milestones] == [("Hardened", None)]
+
+    history = client.get(f"/api/projects/{mid}/history").json()
+    detach = [h for h in history if h["action"] == "update"][0]
+    assert detach["entity"] == "milestone"
+    assert detach["before"]["phase_id"] == phase_id
+    assert detach["after"]["phase_id"] is None
 
 
 # ------------------------------------------------------------------------- report

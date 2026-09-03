@@ -33,7 +33,7 @@
 
 import styled from 'styled-components';
 
-import { palette } from '../../styles/theme';
+import { palette, shadow } from '../../styles/theme';
 import { placeDay, type Grid } from '../../utils/dates';
 import { describeMark, type MilestoneMark, type MilestoneStatus } from '../../utils/milestones';
 
@@ -85,8 +85,8 @@ const Diamond = styled.span<{ $look: Look }>`
   transform: rotate(45deg);
   box-shadow: ${(p) =>
     p.$look.ring
-      ? `0 0 0 1.5px ${p.$look.fill}, 0 1px 3px rgba(94, 17, 56, 0.35)`
-      : '0 1px 3px rgba(94, 17, 56, 0.3)'};
+      ? `0 0 0 1.5px ${p.$look.fill}, ${shadow.mark}`
+      : shadow.mark};
 `;
 
 /**

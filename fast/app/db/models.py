@@ -28,6 +28,11 @@ from typing import Any, Optional
 # against; app/skills.py imports nothing from the app, so this cannot cycle.
 from app.skills import LEGACY_DEFAULT_STARS, LEGACY_LEVEL_STARS, MAX_STARS, MIN_STARS
 
+# The kind discriminator and the two status vocabularies for the work table.
+# Imported for the same reason skills is: the defaults written here and the values
+# the schema validates against must be one list, not two that can drift.
+from app.work import Kind, RfcStatus, TaskStatus
+
 # Sort-key prefixes. Projects and phases share a partition so that one Query
 # returns a project and all of its phases.
 #
@@ -41,6 +46,17 @@ from app.skills import LEGACY_DEFAULT_STARS, LEGACY_LEVEL_STARS, MAX_STARS, MIN_
 PROJECT_SK = "#PROJECT"
 PHASE_SK_PREFIX = "PHASE#"
 MILESTONE_SK_PREFIX = "MILESTONE#"
+
+# The work table's sort key, in the OTHER table (planning-roadmap-work), which is
+# partitioned on item_id. Fixed for every row today: an RFC and a task are each one
+# item, so there is nothing to sort within a partition yet.
+#
+# It exists anyway because a sort key cannot be added to a live DynamoDB table, only
+# migrated to, and the first thing this table will want is comments on an RFC that is
+# "In review" - which is a child row and needs somewhere to go. Punctuation-first for
+# the same reason PROJECT_SK is, so that when children do arrive the item itself
+# still sorts first and items[0] stays a safe assumption.
+WORK_SK = "#ITEM"
 
 
 class Role(str, Enum):
@@ -262,6 +278,22 @@ class MilestoneModel:
     and the gap between them is the interesting one. A milestone dated last month
     with done=False is a missed deadline and the report says so; deriving doneness
     from the date alone would quietly mark every slipped commitment as achieved.
+
+    `phase_id` IS NULLABLE, AND THE NULL IS THE COMMON CASE
+    -------------------------------------------------------
+    A milestone may name the phase it belongs to - "Infra hardening signed off"
+    sits under Infra - or it may name none, because plenty of them belong to the
+    project as a whole. "Regulatory deadline" is not a step inside any one stage of
+    the work; it is a date the entire lane answers to. Requiring an attachment would
+    force one of those two shapes to be filed under the other, and the phase it got
+    filed under would then appear to own a commitment it does not control.
+
+    Stored as a plain string with no foreign key, like every other reference in this
+    table, so the invariant is the writers' job: create_milestone and update_milestone
+    both check the phase belongs to the SAME project, and delete_phase detaches its
+    milestones rather than leaving them behind. A phase_id pointing at a phase that
+    is gone is a milestone filed under a heading nothing draws - present in the table,
+    absent from the chart, which is the one failure mode this app exists to end.
     """
 
     @staticmethod
@@ -276,8 +308,15 @@ class MilestoneModel:
         date: Optional[str] = None,
         note: Optional[str] = None,
         done: bool = False,
+        phase_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Build a milestone item. `date` is an ISO day string, or None."""
+        """
+        Build a milestone item. `date` is an ISO day string, or None.
+
+        `phase_id` is last and defaults to None so that every existing caller - the
+        batch inside create_project, the tests, demo.py - keeps meaning what it did:
+        a milestone belonging to the project rather than to any stage of it.
+        """
         now = _now()
         return {
             "project_id": project_id,
@@ -287,13 +326,23 @@ class MilestoneModel:
             "date": date,
             "note": note or None,
             "done": done,
+            # Normalised to a real null, not "". An empty string is what a form sends
+            # for "not tied to a phase", and left alone it is a phase id that passes a
+            # truthy check and matches no phase.
+            "phase_id": phase_id or None,
             "created_at": now,
             "updated_at": now,
         }
 
     @staticmethod
     def from_item(item: dict[str, Any]) -> dict[str, Any]:
-        """Convert a DynamoDB item to a schema-compatible dict."""
+        """
+        Convert a DynamoDB item to a schema-compatible dict.
+
+        `phase_id` uses .get with no default on purpose: every milestone written
+        before this field existed simply has no attribute, and "absent" and "attached
+        to nothing" are the same fact here - unlike `date`, where they would not be.
+        """
         return {
             "project_id": item.get("project_id"),
             "milestone_id": item.get("milestone_id"),
@@ -301,6 +350,7 @@ class MilestoneModel:
             "date": item.get("date") or None,
             "note": item.get("note") or None,
             "done": item.get("done", False),
+            "phase_id": item.get("phase_id") or None,
             "created_at": item.get("created_at"),
             "updated_at": item.get("updated_at"),
         }
@@ -438,6 +488,156 @@ class PersonModel:
         return max(MIN_STARS, min(MAX_STARS, stars))
 
 
+class RfcModel:
+    """
+    A written proposal, with or without a project attached.
+
+    `project_id` IS NULLABLE and that is the whole reason this lives in its own
+    table. In the projects table project_id is the partition key, so "an RFC about
+    how we do code review, which is not about any one project" could only be stored
+    by inventing a fake project to hang it on. Here it is an ordinary attribute and
+    the honest answer is null - the same rule that lets a phase have no dates.
+
+    `body` is markdown and is NOT nullable; it defaults to "". This looks like an
+    exception to the absent-vs-null rule and is not one. That rule exists because an
+    unscheduled date and a date of zero are genuinely different facts. Prose has a
+    real empty value: an RFC nobody has written yet and an RFC written as the empty
+    string are the same document, so a second way to say "no text" would be a
+    distinction with nothing behind it.
+
+    `decided_on`, never `date`. Naming a pydantic field after its own type cost this
+    codebase a debugging round once - see MilestoneModel and the Milestone section of
+    CLAUDE.md - because the assignment binds before the annotation resolves and the
+    field silently becomes NoneType, rejecting every real date with a 422. The word
+    is avoided here rather than worked around.
+    """
+
+    @staticmethod
+    def create_item(
+        item_id: str,
+        title: str,
+        body: str = "",
+        status: str = RfcStatus.DRAFT.value,
+        project_id: Optional[str] = None,
+        owner_email: Optional[str] = None,
+        decided_on: Optional[str] = None,
+        created_by: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Build an RFC item. `decided_on` is an ISO day string, or None."""
+        now = _now()
+        return {
+            "item_id": item_id,
+            "sk": WORK_SK,
+            "kind": Kind.RFC.value,
+            "title": title,
+            "body": body or "",
+            "status": status,
+            "project_id": project_id,
+            "owner_email": owner_email,
+            "decided_on": decided_on,
+            "created_by": created_by,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    @staticmethod
+    def from_item(item: dict[str, Any]) -> dict[str, Any]:
+        """Convert a DynamoDB item to a schema-compatible dict."""
+        return {
+            "item_id": item.get("item_id"),
+            "kind": Kind.RFC.value,
+            "title": item.get("title"),
+            "body": item.get("body") or "",
+            "status": item.get("status") or RfcStatus.DRAFT.value,
+            "project_id": item.get("project_id") or None,
+            "owner_email": item.get("owner_email") or None,
+            "decided_on": item.get("decided_on") or None,
+            "created_by": item.get("created_by") or None,
+            "created_at": item.get("created_at"),
+            "updated_at": item.get("updated_at"),
+        }
+
+
+class TaskModel:
+    """
+    A piece of work that is not a phase on the chart.
+
+    THERE IS NO SEPARATE TICKET. A ticket is a task that has children, a subtask is a
+    task that has a parent, and a loose to-do has neither - `parent_id` is the entire
+    difference between them. Two entities would have meant duplicating title, status,
+    body, owner, project link, ordering and timestamps to gain one boolean's worth of
+    information.
+
+    Nesting is capped at ONE level, enforced in queries/work.py in both directions.
+    See app/work.py for why: at one level cycles are impossible by construction
+    rather than by a check that has to stay correct, and nothing that renders a board
+    can recurse without bound.
+
+    A parent's status is NOT derived from its children, deliberately. Same argument
+    as MilestoneModel.done being independent of the date: the state worth surfacing
+    is the one where the two disagree, and "every subtask done, ticket still open"
+    is a real situation that a derived parent would erase.
+
+    `task_order` exists now although nothing sorts by it yet, because adding an
+    ordering column later means backfilling every row. It follows the same rule as
+    lane_order and phase_order and carries the same trap: it defaults to 0 here, so a
+    task created without one sorts to the TOP of the backlog above work already
+    there. The client computes and sends the next order, exactly as nextLaneOrder
+    does on the roadmap.
+    """
+
+    @staticmethod
+    def create_item(
+        item_id: str,
+        title: str,
+        body: str = "",
+        status: str = TaskStatus.BACKLOG.value,
+        project_id: Optional[str] = None,
+        parent_id: Optional[str] = None,
+        owner_email: Optional[str] = None,
+        due: Optional[str] = None,
+        task_order: int = 0,
+        created_by: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Build a task item. `due` is an ISO day string, or None."""
+        now = _now()
+        return {
+            "item_id": item_id,
+            "sk": WORK_SK,
+            "kind": Kind.TASK.value,
+            "title": title,
+            "body": body or "",
+            "status": status,
+            "project_id": project_id,
+            "parent_id": parent_id,
+            "owner_email": owner_email,
+            "due": due,
+            "task_order": task_order,
+            "created_by": created_by,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    @staticmethod
+    def from_item(item: dict[str, Any]) -> dict[str, Any]:
+        """Convert a DynamoDB item to a schema-compatible dict."""
+        return {
+            "item_id": item.get("item_id"),
+            "kind": Kind.TASK.value,
+            "title": item.get("title"),
+            "body": item.get("body") or "",
+            "status": item.get("status") or TaskStatus.BACKLOG.value,
+            "project_id": item.get("project_id") or None,
+            "parent_id": item.get("parent_id") or None,
+            "owner_email": item.get("owner_email") or None,
+            "due": item.get("due") or None,
+            "task_order": from_decimal(item.get("task_order", 0)),
+            "created_by": item.get("created_by") or None,
+            "created_at": item.get("created_at"),
+            "updated_at": item.get("updated_at"),
+        }
+
+
 class AuditLogModel:
     """
     One row per mutation: what changed, from what, to what, and by whom.
@@ -454,6 +654,13 @@ class AuditLogModel:
     ENTITY_MILESTONE = "milestone"
     ENTITY_PERSON = "person"
     ENTITY_ASSIGNMENT = "assignment"
+    # RFCs and tasks audit separately even though they share a table. The entity is
+    # what /history filters on, and "show me every decision that was withdrawn" and
+    # "show me every task that got reassigned" are different questions asked by
+    # different screens - a single "work" entity would make each of them read the
+    # other's rows and throw most of them away.
+    ENTITY_RFC = "rfc"
+    ENTITY_TASK = "task"
 
     @staticmethod
     def create_entry(

@@ -120,12 +120,37 @@ class MilestoneBase(BaseModel):
     on the chart - there is nowhere honest to put them on a time axis - so the lane's
     tooltip is what names them. /api/roadmap/gaps used to report them too, and has
     been removed.
+
+    `phase_id` is Optional as well, for a reason of its own rather than the same one.
+    A milestone may sit under a phase ("Infra hardening signed off") or under the
+    project as a whole ("Regulatory deadline"), and both are ordinary - so the field
+    is optional in the sense of "genuinely may be nothing", not "we will fill it in
+    later". It is deliberately NOT validated here: whether that phase exists and
+    whether it belongs to THIS project are questions about other rows in the table,
+    and every cross-row rule in this app is enforced in db/queries/projects.py where
+    the rows can actually be read.
     """
 
     name: str = Field(min_length=1, max_length=200)
     date: Optional[ISODate] = None
     note: Optional[str] = Field(default=None, max_length=500)
     done: bool = False
+    phase_id: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("phase_id")
+    @classmethod
+    def normalise_phase_id(cls, value: Optional[str]) -> Optional[str]:
+        """
+        Trim, and turn an empty string into a real null.
+
+        `""` is what a `<select>` submits for its "Not tied to a phase" option. Left
+        alone it is a phase id that passes a truthy check, matches no phase, and gets
+        rejected downstream as a dangling reference - a 400 for what the person
+        correctly answered as "none". Same argument as normalise_email below.
+        """
+        if value is None:
+            return None
+        return value.strip() or None
 
 
 class MilestoneCreate(MilestoneBase):
@@ -133,12 +158,29 @@ class MilestoneCreate(MilestoneBase):
 
 
 class MilestoneUpdate(BaseModel):
-    """Body for a partial milestone update. Same absent/null rule as PhaseUpdate."""
+    """
+    Body for a partial milestone update. Same absent/null rule as PhaseUpdate.
+
+    `"phase_id": null` is a real edit meaning "detach this from its phase - it
+    belongs to the project", and is a different request from omitting the field,
+    which leaves the attachment alone. That distinction is the whole reason this
+    model exists rather than reusing MilestoneBase, and it is exactly the case a
+    naive `if changes.get("phase_id")` in the queries layer would drop.
+    """
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     date: Optional[ISODate] = None
     note: Optional[str] = Field(default=None, max_length=500)
     done: Optional[bool] = None
+    phase_id: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("phase_id")
+    @classmethod
+    def normalise_phase_id(cls, value: Optional[str]) -> Optional[str]:
+        """Empty string means detach, same as an explicit null. See MilestoneBase."""
+        if value is None:
+            return None
+        return value.strip() or None
 
     def changes(self) -> dict[str, Any]:
         """Only the fields the caller actually sent. See the module docstring."""
@@ -154,6 +196,8 @@ class MilestoneOut(BaseModel):
     date: Optional[ISODate] = None
     note: Optional[str] = None
     done: bool = False
+    # null when it belongs to the project rather than to one of its phases.
+    phase_id: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 

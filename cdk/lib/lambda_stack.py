@@ -24,6 +24,7 @@ class LambdaStack(cdk.Stack):
         construct_id: str,
         projects_table: dynamodb.ITable,
         people_table: dynamodb.ITable,
+        work_table: dynamodb.ITable,
         audit_table: dynamodb.ITable,
         user_pool: cognito.IUserPool,
         env_name: str,
@@ -50,11 +51,12 @@ class LambdaStack(cdk.Stack):
             ],
         )
 
-        # Read/write on all three tables. grant_read_write_data covers the audit
-        # table's GSI too, which a hand-written policy usually forgets - a Query on
-        # an index needs the index ARN, not just the table's, and the failure shows
-        # up only on the "what changed lately" route.
-        for table in (projects_table, people_table, audit_table):
+        # Read/write on all four tables. grant_read_write_data covers each table's
+        # GSIs too, which a hand-written policy usually forgets - a Query on an index
+        # needs the index ARN, not just the table's, and the failure shows up only on
+        # the routes that use one: "what changed lately" on the audit table, and every
+        # RFC and task list page on the work table.
+        for table in (projects_table, people_table, work_table, audit_table):
             table.grant_read_write_data(lambda_role)
 
         # Four Cognito admin verbs, and no more.
@@ -154,6 +156,8 @@ class LambdaStack(cdk.Stack):
             environment={
                 "PROJECTS_TABLE_NAME": projects_table.table_name,
                 "PEOPLE_TABLE_NAME": people_table.table_name,
+                "WORK_TABLE_NAME": work_table.table_name,
+                "WORK_BY_KIND_INDEX": "kind-updated-index",
                 "AUDIT_TABLE_NAME": audit_table.table_name,
                 "AUDIT_BY_ENTITY_INDEX": "entity-timestamp-index",
                 "COGNITO_USER_POOL_ID": user_pool.user_pool_id,

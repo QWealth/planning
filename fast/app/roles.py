@@ -11,8 +11,9 @@ THREE THINGS CALLED "ROLE", AND THIS IS ONLY ONE OF THEM
 The word is overloaded in this codebase and conflating the three would be a real bug,
 so, explicitly:
 
-    Role (here)     What somebody is: BA, UX, Software Engineer, QA, Data, Leadership.
-                    A property of the person. Stable across projects.
+    Role (here)     What somebody is: BA, UX, Software Engineer, QA, Data, Leadership,
+                    Outside engineering. A property of the person. Stable across
+                    projects.
 
     dri / support   What somebody is *on one lane*. A property of the assignment, not
                     the person - it lives on the project item, and the same person is
@@ -40,8 +41,28 @@ entry against Skill.QA_TESTING. Roles answer "who is this person"; skills answer
 could take this phase". Merging them would lose the second question, which is the one
 that actually decides staffing.
 
-Roles are also deliberately coarse - six entries, not twenty. They are for reading a
+Roles are also deliberately coarse - seven entries, not twenty. They are for reading a
 roster at a glance. Granularity belongs in skills, which is the list that grows.
+
+THE CATCH-ALL, AND WHY IT IS ONE ENTRY RATHER THAN FOUR
+-------------------------------------------------------
+Role.OUTSIDE_ENGINEERING covers everybody whose job is not a delivery discipline -
+operations, product, compliance, marketing, finance. Six of the seven roles name a
+craft; this one names the absence of one, which makes it the only entry on the list
+that is defined by what it is not.
+
+That is deliberate, and it is the coarse-list argument applied to its own hardest
+case. Splitting it into Operations / Product / Compliance / Marketing would read
+better on a roster and would be four guesses about an org chart this app does not
+model, made at the moment somebody is filling in a form about themselves. One honest
+entry beats four that people pick between arbitrarily, because a role nobody can
+choose consistently is a filter that returns the wrong people - the same failure the
+closed list exists to prevent, arriving by a different door.
+
+It is last in the list on purpose: a catch-all belongs at the end, the same way
+`other` sits at the bottom of the phase-state ranking. If a specific discipline ever
+earns its own entry, add it - but add it because somebody asked for that discipline
+by name, not because this one felt vague.
 
 REQUIRED GOING IN, TOLERATED COMING OUT
 ---------------------------------------
@@ -74,6 +95,7 @@ class Role(str, Enum):
     QA = "qa"
     DATA = "data"
     LEADERSHIP = "leadership"
+    OUTSIDE_ENGINEERING = "outside-engineering"
 
 
 LABELS: dict[str, str] = {
@@ -83,6 +105,7 @@ LABELS: dict[str, str] = {
     Role.QA: "QA",
     Role.DATA: "Data",
     Role.LEADERSHIP: "Leadership",
+    Role.OUTSIDE_ENGINEERING: "Outside engineering",
 }
 
 # Shown next to each option in the picker. These describe the person, not the work -
@@ -95,6 +118,10 @@ DESCRIPTIONS: dict[str, str] = {
     Role.QA: "Test strategy, and the Testing phase on every lane.",
     Role.DATA: "Pipelines, feeds, reporting, data modelling.",
     Role.LEADERSHIP: "Sets direction and owns outcomes. A job, not a permission.",
+    Role.OUTSIDE_ENGINEERING: (
+        "Works with the team from another part of the business - operations, "
+        "product, compliance, marketing, finance."
+    ),
 }
 
 

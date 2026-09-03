@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { Milestone } from '../types';
+import type { Milestone, Phase } from '../types';
 import { formatLong } from './dates';
 import {
   describeMark,
@@ -20,6 +20,7 @@ import {
   milestoneDates,
   milestoneStatus,
   missedCount,
+  placeMilestones,
   sortMilestones,
   undatedMilestones,
 } from './milestones';
@@ -28,7 +29,12 @@ const TODAY = '2026-08-28';
 
 let counter = 0;
 
-function ms(name: string, date: string | null, done = false): Milestone {
+function ms(
+  name: string,
+  date: string | null,
+  done = false,
+  phaseId: string | null = null
+): Milestone {
   counter += 1;
   return {
     project_id: 'p',
@@ -37,6 +43,23 @@ function ms(name: string, date: string | null, done = false): Milestone {
     date,
     note: null,
     done,
+    phase_id: phaseId,
+    created_at: null,
+    updated_at: null,
+  };
+}
+
+function phase(phaseId: string, name = phaseId): Phase {
+  return {
+    project_id: 'p',
+    phase_id: phaseId,
+    name,
+    phase_order: 0,
+    owner_email: null,
+    start: null,
+    end: null,
+    progress: null,
+    structural: false,
     created_at: null,
     updated_at: null,
   };
@@ -260,5 +283,88 @@ describe('describeMark', () => {
     expect(describeMark(mark, TODAY)).toBe(
       `2 milestones on ${formatLong('2026-09-15')}: Beta launch, Board demo`
     );
+  });
+});
+
+describe('placeMilestones', () => {
+  it('puts an attached milestone under its phase and the rest on the lane', () => {
+    const infra = phase('ph-infra');
+    const placement = placeMilestones(
+      [ms('Hardened', '2026-09-01', false, 'ph-infra'), ms('Regulatory deadline', '2026-12-31')],
+      [infra]
+    );
+
+    expect(placement.byPhase.get('ph-infra')?.map((m) => m.name)).toEqual(['Hardened']);
+    expect(placement.onLane.map((m) => m.name)).toEqual(['Regulatory deadline']);
+  });
+
+  it('leaves out phases that have no milestones', () => {
+    // An empty entry would make the caller draw a heading for nothing.
+    const placement = placeMilestones([ms('Deadline', '2026-12-31')], [phase('ph-1')]);
+
+    expect(placement.byPhase.size).toBe(0);
+  });
+
+  it('keeps a milestone whose phase is missing, on the lane', () => {
+    // The server detaches milestones when a phase is deleted, so a phase_id that
+    // matches nothing means this payload is stale - and the lane is where the row is
+    // about to end up anyway. Dropping it would make a commitment disappear from the
+    // only screen that lists it.
+    const placement = placeMilestones([ms('Orphan', '2026-09-01', false, 'gone')], [phase('ph-1')]);
+
+    expect(placement.byPhase.size).toBe(0);
+    expect(placement.onLane.map((m) => m.name)).toEqual(['Orphan']);
+  });
+
+  it('sorts each group by date, undated last', () => {
+    const placement = placeMilestones(
+      [
+        ms('Someday', null, false, 'ph-1'),
+        ms('December', '2026-12-01', false, 'ph-1'),
+        ms('September', '2026-09-01', false, 'ph-1'),
+      ],
+      [phase('ph-1')]
+    );
+
+    expect(placement.byPhase.get('ph-1')?.map((m) => m.name)).toEqual([
+      'September',
+      'December',
+      'Someday',
+    ]);
+  });
+
+  it('sorts the lane group too', () => {
+    const placement = placeMilestones([ms('Later', '2026-12-01'), ms('Sooner', '2026-09-01')], []);
+
+    expect(placement.onLane.map((m) => m.name)).toEqual(['Sooner', 'Later']);
+  });
+
+  it('separates milestones belonging to different phases', () => {
+    const placement = placeMilestones(
+      [
+        ms('Infra done', '2026-09-01', false, 'ph-infra'),
+        ms('Built', '2026-10-01', false, 'ph-build'),
+      ],
+      [phase('ph-infra'), phase('ph-build')]
+    );
+
+    expect(placement.byPhase.get('ph-infra')?.map((m) => m.name)).toEqual(['Infra done']);
+    expect(placement.byPhase.get('ph-build')?.map((m) => m.name)).toEqual(['Built']);
+    expect(placement.onLane).toEqual([]);
+  });
+
+  it('leaves the array it was given alone', () => {
+    const list = [ms('B', '2026-12-01', false, 'ph-1'), ms('A', '2026-09-01', false, 'ph-1')];
+
+    placeMilestones(list, [phase('ph-1')]);
+
+    expect(list.map((m) => m.name)).toEqual(['B', 'A']);
+  });
+
+  it('treats no milestones as no placement at all', () => {
+    const placement = placeMilestones([], [phase('ph-1')]);
+
+    expect(placement.byPhase.size).toBe(0);
+    expect(placement.onLane).toEqual([]);
   });
 });

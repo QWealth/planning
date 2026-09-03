@@ -40,6 +40,8 @@ PROJECTS_TABLE = "demo-planning-projects"
 PEOPLE_TABLE = "demo-planning-people"
 AUDIT_TABLE = "demo-planning-audit"
 AUDIT_INDEX = "entity-timestamp-index"
+WORK_TABLE = "demo-planning-work"
+WORK_INDEX = "kind-updated-index"
 
 # Reserved by RFC 2606. Cannot resolve, cannot receive mail, cannot be mistaken for
 # a real address by anyone reading the screen.
@@ -47,7 +49,7 @@ FAKE_DOMAIN = "@example.invalid"
 
 
 def create_tables(ddb) -> None:
-    """The three tables, with the same key schema slice 5's CDK will create."""
+    """The four tables, with the same key schema the CDK creates."""
     ddb.create_table(
         TableName=PROJECTS_TABLE,
         KeySchema=[
@@ -64,6 +66,30 @@ def create_tables(ddb) -> None:
         TableName=PEOPLE_TABLE,
         KeySchema=[{"AttributeName": "email", "KeyType": "HASH"}],
         AttributeDefinitions=[{"AttributeName": "email", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    ddb.create_table(
+        TableName=WORK_TABLE,
+        KeySchema=[
+            {"AttributeName": "item_id", "KeyType": "HASH"},
+            {"AttributeName": "sk", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "item_id", "AttributeType": "S"},
+            {"AttributeName": "sk", "AttributeType": "S"},
+            {"AttributeName": "kind", "AttributeType": "S"},
+            {"AttributeName": "updated_at", "AttributeType": "S"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": WORK_INDEX,
+                "KeySchema": [
+                    {"AttributeName": "kind", "KeyType": "HASH"},
+                    {"AttributeName": "updated_at", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            }
+        ],
         BillingMode="PAY_PER_REQUEST",
     )
     ddb.create_table(
@@ -112,16 +138,19 @@ def main() -> None:
         create_tables(ddb)
 
         from app import auth, cognito, config
-        from app.db.queries import audit, people, projects
+        from app.db.queries import audit, people, projects, work
         from app.seeds.load_roadmap import load, plan, resolve_people
 
         config.PROJECTS_TABLE_NAME = PROJECTS_TABLE
         config.PEOPLE_TABLE_NAME = PEOPLE_TABLE
         config.AUDIT_TABLE_NAME = AUDIT_TABLE
         config.AUDIT_BY_ENTITY_INDEX = AUDIT_INDEX
+        config.WORK_TABLE_NAME = WORK_TABLE
+        config.WORK_BY_KIND_INDEX = WORK_INDEX
         projects.dynamodb = ddb
         people.dynamodb = ddb
         audit.dynamodb = ddb
+        work.dynamodb = ddb
 
         # No API Gateway in front of uvicorn means no claims and no groups, so the
         # group check would 401 every request. Off here, and only here.
@@ -131,8 +160,15 @@ def main() -> None:
         # Who you are signed in as, overridable because the roster is now self-service
         # and "am I an admin, and is this row mine" is a thing to exercise locally:
         #
-        #   DEV_USER_EMAIL=ha.nguyen@example.invalid ./venv/bin/python demo.py
+        #   DEV_USER_EMAIL=ha@example.invalid ./venv/bin/python demo.py
         #   DEV_ADMIN=false ./venv/bin/python demo.py
+        #
+        # The seeded addresses are FIRST NAME ONLY - `ha@`, not `ha.nguyen@` - because
+        # that is what the workbook holds. Guessing at a surname here costs more than
+        # it looks like it should: an address with no roster row is unonboarded, and
+        # AppShell then renders the onboarding gate INSTEAD of the nav and the outlet,
+        # so every page looks broken rather than the identity looking wrong. Read the
+        # roster (`curl -s localhost:8000/api/people`) rather than guessing.
         #
         # The default is deliberately NOT addable. `.invalid` is reserved by RFC 2606,
         # so EmailStr refuses it and POST /api/people 422s - which is confusing for

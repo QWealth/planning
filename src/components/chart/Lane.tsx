@@ -31,6 +31,7 @@ import {
   laneMilestones,
   milestoneStatus,
   missedCount,
+  placeMilestones,
   undatedMilestones,
 } from '../../utils/milestones';
 import { describeVerdict, laneVerdict, phaseState } from '../../utils/phaseState';
@@ -76,7 +77,7 @@ const StateDot = styled.span<{ $fill: string }>`
   height: 9px;
   border-radius: 50%;
   background: ${(p) => p.$fill};
-  border: 1px solid rgba(46, 21, 36, 0.15);
+  border: 1px solid ${palette.hairline};
 `;
 
 const NameRow = styled.div`
@@ -108,7 +109,7 @@ const SupportChip = styled(Chip)`
   transform: translateY(-50%);
   color: ${palette.slateDeep};
   border-color: ${palette.border};
-  background: rgba(180, 162, 172, 0.12);
+  background: ${palette.slateWash};
 `;
 
 /** Move controls for this lane, or null when the roadmap is not being reordered. */
@@ -174,6 +175,11 @@ export default function Lane({
   const marks = laneMilestones(project.milestones, today);
   const missed = missedCount(marks, today);
   const undated = undatedMilestones(project.milestones);
+  // Only the EXPANDED lane cares which phase a milestone belongs to. The collapsed
+  // lane's diamonds are positions on a time axis, and a date does not move by being
+  // filed under Infra - so `marks` above is computed over every milestone, attached
+  // or not, and this split is purely about which row the listing goes under.
+  const placement = placeMilestones(project.milestones, project.phases);
 
   // Where a newly added phase goes: after everything already there. The API defaults
   // phase_order to 0 (see create_phase in fast/app/db/queries/projects.py), so without
@@ -237,6 +243,89 @@ export default function Lane({
     (verdict.basis === 'complete'
       ? 'Complete'
       : `${style.label} · ${describeProgress(verdict.progress)}${concurrency}`) + slipped;
+
+  /**
+   * One milestone's row, wherever it is listed.
+   *
+   * A function rather than two copies of the JSX, because the row is the same row: a
+   * milestone attached to Infra is not a different KIND of thing from one the lane
+   * owns, it is filed differently. `nested` is the only difference and it is purely
+   * an indent - see PhaseLabelCell in parts.ts - so duplicating forty lines to change
+   * one margin would guarantee the two drift apart.
+   *
+   * Not extracted to its own component: it closes over the grid, today, the editor
+   * state and four callbacks, so a component would take eight props to render what
+   * the row above it renders inline.
+   */
+  const renderMilestone = (milestone: Milestone, nested: boolean) => {
+    const status = milestoneStatus(milestone, today);
+    const title = `${project.name} — ${describeMilestone(milestone, today)}`;
+    // placeDay is only meaningful for a milestone that has a date. An undated
+    // one gets the same "no dates" treatment a phase does rather than a
+    // diamond parked at 0%, which would read as a deadline of "the start of
+    // the chart" - an invented commitment, which is the one thing the whole
+    // nullable-date design exists to avoid.
+    const leftPct = milestone.date ? placeDay(grid, milestone.date) : null;
+
+    return (
+      <div key={milestone.milestone_id}>
+        <PhaseRow>
+          <PhaseLabelCell $nested={nested}>
+            <MilestoneDiamond status={status} />
+            <PhaseName title={milestone.name}>{milestone.name}</PhaseName>
+            {/* formatMedium, not formatLong. The label column is 264px and
+                this row spends some of it on a diamond, so a full "Wed, 1 Jul
+                2026" pushed the milestone's NAME into an ellipsis - and a row
+                that truncates its own subject to keep the weekday has its
+                priorities backwards. The weekday is still a hover away.
+                DateLabel rather than SubLabel so the date is never itself the
+                thing that gets clipped; see its definition in parts.ts. */}
+            <DateLabel title={title}>
+              {milestone.date ? formatMedium(milestone.date) : 'no date set'}
+            </DateLabel>
+            <EditButton
+              type="button"
+              onClick={() =>
+                setEditingMilestoneId((current) =>
+                  current === milestone.milestone_id ? null : milestone.milestone_id
+                )
+              }
+            >
+              Edit
+            </EditButton>
+          </PhaseLabelCell>
+          <Track>
+            {leftPct !== null && leftPct >= 0 && leftPct <= 100 ? (
+              <MilestonePin $leftPct={leftPct} title={title} role="img" aria-label={title}>
+                <MilestoneDiamond status={status} />
+              </MilestonePin>
+            ) : (
+              <NoDates title={title}>No date set</NoDates>
+            )}
+          </Track>
+        </PhaseRow>
+
+        {editingMilestoneId === milestone.milestone_id ? (
+          <EditorRow>
+            <MilestoneEditor
+              milestone={milestone}
+              projectId={project.project_id}
+              phases={project.phases}
+              onCancel={() => setEditingMilestoneId(null)}
+              onSaved={(saved) => {
+                onMilestoneSaved(saved);
+                setEditingMilestoneId(null);
+              }}
+              onDeleted={(milestoneId) => {
+                onMilestoneDeleted(project.project_id, milestoneId);
+                setEditingMilestoneId(null);
+              }}
+            />
+          </EditorRow>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -417,6 +506,13 @@ export default function Lane({
                     />
                   </EditorRow>
                 ) : null}
+
+                {/* This phase's own milestones, immediately beneath it and indented
+                    one step further. Below the editor row rather than above it so
+                    that opening the phase's form does not push its deadlines away
+                    from it, and inside this phase's <div> so a phase that gets
+                    reordered takes its milestones with it. */}
+                {placement.byPhase.get(phase.phase_id)?.map((m) => renderMilestone(m, true))}
               </div>
             );
           })
@@ -438,82 +534,20 @@ export default function Lane({
         </EditorRow>
       ) : null}
 
-      {expanded
-        ? project.milestones.map((milestone) => {
-            const status = milestoneStatus(milestone, today);
-            const title = `${project.name} — ${describeMilestone(milestone, today)}`;
-            // placeDay is only meaningful for a milestone that has a date. An undated
-            // one gets the same "no dates" treatment a phase does rather than a
-            // diamond parked at 0%, which would read as a deadline of "the start of
-            // the chart" - an invented commitment, which is the one thing the whole
-            // nullable-date design exists to avoid.
-            const leftPct = milestone.date ? placeDay(grid, milestone.date) : null;
-
-            return (
-              <div key={milestone.milestone_id}>
-                <PhaseRow>
-                  <PhaseLabelCell>
-                    <MilestoneDiamond status={status} />
-                    <PhaseName title={milestone.name}>{milestone.name}</PhaseName>
-                    {/* formatMedium, not formatLong. The label column is 264px and
-                        this row spends some of it on a diamond, so a full "Wed, 1 Jul
-                        2026" pushed the milestone's NAME into an ellipsis - and a row
-                        that truncates its own subject to keep the weekday has its
-                        priorities backwards. The weekday is still a hover away.
-                        DateLabel rather than SubLabel so the date is never itself the
-                        thing that gets clipped; see its definition in parts.ts. */}
-                    <DateLabel title={title}>
-                      {milestone.date ? formatMedium(milestone.date) : 'no date set'}
-                    </DateLabel>
-                    <EditButton
-                      type="button"
-                      onClick={() =>
-                        setEditingMilestoneId((current) =>
-                          current === milestone.milestone_id ? null : milestone.milestone_id
-                        )
-                      }
-                    >
-                      Edit
-                    </EditButton>
-                  </PhaseLabelCell>
-                  <Track>
-                    {leftPct !== null && leftPct >= 0 && leftPct <= 100 ? (
-                      <MilestonePin $leftPct={leftPct} title={title} role="img" aria-label={title}>
-                        <MilestoneDiamond status={status} />
-                      </MilestonePin>
-                    ) : (
-                      <NoDates title={title}>No date set</NoDates>
-                    )}
-                  </Track>
-                </PhaseRow>
-
-                {editingMilestoneId === milestone.milestone_id ? (
-                  <EditorRow>
-                    <MilestoneEditor
-                      milestone={milestone}
-                      projectId={project.project_id}
-                      onCancel={() => setEditingMilestoneId(null)}
-                      onSaved={(saved) => {
-                        onMilestoneSaved(saved);
-                        setEditingMilestoneId(null);
-                      }}
-                      onDeleted={(milestoneId) => {
-                        onMilestoneDeleted(project.project_id, milestoneId);
-                        setEditingMilestoneId(null);
-                      }}
-                    />
-                  </EditorRow>
-                ) : null}
-              </div>
-            );
-          })
-        : null}
+      {/* The unattached ones, listed against the lane itself and below the phases.
+          These are the majority and they are not leftovers: "Regulatory deadline" is
+          a date the whole lane answers to. The ones that DO name a phase have already
+          been drawn directly under it, up in the phases map, which is the whole point
+          of the split - a deadline that belongs to a stage of the work should be read
+          next to that stage, not in a separate list further down the screen. */}
+      {expanded ? placement.onLane.map((milestone) => renderMilestone(milestone, false)) : null}
 
       {expanded && adding === 'milestone' ? (
         <EditorRow>
           <MilestoneEditor
             milestone={null}
             projectId={project.project_id}
+            phases={project.phases}
             onCancel={() => setAdding(null)}
             onSaved={(saved) => {
               onMilestoneSaved(saved);

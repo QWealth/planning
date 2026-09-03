@@ -75,16 +75,25 @@ async def create_project(
     body: ProjectCreate,
     user_email: str = Depends(require_planning_group),
 ) -> dict[str, Any]:
-    """Create a project, optionally with its phases and milestones."""
-    created = q.create_project(
-        name=body.name,
-        lane_order=body.lane_order,
-        dri_email=body.dri_email,
-        support_email=body.support_email,
-        active=body.active,
-        phases=[p.model_dump() for p in body.phases],
-        milestones=[m.model_dump() for m in body.milestones],
-    )
+    """
+    Create a project, optionally with its phases and milestones.
+
+    The 400 here is for a milestone that names a phase: nothing in this request has
+    a phase id yet, so there is no attachment that could be meant. See
+    q.create_project.
+    """
+    try:
+        created = q.create_project(
+            name=body.name,
+            lane_order=body.lane_order,
+            dri_email=body.dri_email,
+            support_email=body.support_email,
+            active=body.active,
+            phases=[p.model_dump() for p in body.phases],
+            milestones=[m.model_dump() for m in body.milestones],
+        )
+    except q.ValidationError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     audit.record(
         action="create",
         entity=AuditLogModel.ENTITY_PROJECT,
@@ -227,10 +236,27 @@ async def delete_phase(
     phase_id: str,
     user_email: str = Depends(require_planning_group),
 ) -> None:
-    """Remove a phase. The audit row keeps the full before-snapshot."""
+    """
+    Remove a phase. The audit row keeps the full before-snapshot.
+
+    Any milestones filed under it are detached, not deleted - see
+    q.detach_phase_milestones for why - and each one gets its own audit row. They are
+    real edits to real rows, and folding them into the phase's delete entry would
+    make "why is this milestone no longer under Infra" answerable only by someone who
+    already knew to look at a different entity's history.
+    """
     before = q.get_phase(project_id, phase_id)
     if before is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such phase.")
+
+    # Snapshotted BEFORE the delete, because afterwards the attachment is gone and
+    # there is nothing left to say what these used to belong to.
+    project = q.get_project(project_id) or {}
+    attached = [
+        milestone
+        for milestone in project.get("milestones", [])
+        if milestone.get("phase_id") == phase_id
+    ]
 
     q.delete_phase(project_id, phase_id)
     audit.record(
@@ -240,6 +266,15 @@ async def delete_phase(
         before=before,
         user_email=user_email,
     )
+    for milestone in attached:
+        audit.record(
+            action="update",
+            entity=AuditLogModel.ENTITY_MILESTONE,
+            entity_id=milestone["milestone_id"],
+            before=milestone,
+            after={**milestone, "phase_id": None},
+            user_email=user_email,
+        )
 
 
 # ------------------------------------------------------------------- milestones
@@ -258,11 +293,17 @@ async def create_milestone(
 
     Same reason as create_phase for loading the project first: there are no foreign
     keys, so an unknown project_id would produce a milestone that is stored, costs
-    money and is never rendered by anything.
+    money and is never rendered by anything. `phase_id` is the same argument one
+    level down and gets the same treatment - checked against this project's phases,
+    400 if it names none of them. Omit it, or send null, for a milestone that belongs
+    to the lane as a whole; that is the ordinary case, not the fallback.
     """
     _load_project_or_404(project_id)
 
-    created = q.create_milestone(project_id, body.model_dump())
+    try:
+        created = q.create_milestone(project_id, body.model_dump())
+    except q.ValidationError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     audit.record(
         action="create",
         entity=AuditLogModel.ENTITY_MILESTONE,

@@ -19,11 +19,12 @@
  * right-hand edge.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styled from 'styled-components';
 
 import Legend from '../components/Legend';
 import ProjectEditor from '../components/ProjectEditor';
+import { useIdentity } from '../components/AppShell';
 import Timeline, { laneAnchorId } from '../components/chart/Timeline';
 import { describeError, getRoadmap, saveLaneOrder } from '../services/api';
 import { palette } from '../styles/theme';
@@ -32,6 +33,7 @@ import type { Milestone, Phase, Project, ProjectPatch, Roadmap } from '../types'
 import { buildGrid, todayISO } from '../utils/dates';
 import { laneOrderChanges, moveLane } from '../utils/laneOrder';
 import { milestoneDates, sortMilestones } from '../utils/milestones';
+import { responsibleProjectIds } from '../utils/projects';
 
 const Toolbar = styled.div`
   display: flex;
@@ -58,10 +60,18 @@ const NewProjectHead = styled.h2`
 `;
 
 export default function RoadmapPage() {
+  const identity = useIdentity();
   const [roadmap, setRoadmap] = useState<Roadmap | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  /**
+   * Which lanes are open. Empty until the first load, then seeded with your own.
+   *
+   * Cannot be an initialiser: neither the projects nor the identity exist at mount -
+   * one comes from /api/roadmap and the other from /api/me, both in flight - so the
+   * seeding is an effect below rather than a `useState(...)` argument.
+   */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [addingProject, setAddingProject] = useState(false);
 
@@ -100,6 +110,47 @@ export default function RoadmapPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * Guards the seeding below so it happens exactly once per mount.
+   *
+   * A ref rather than state, because flipping it must not cause a render - and because
+   * the thing it guards is a one-shot: the seed is an OPENING POSITION, not a rule the
+   * page keeps enforcing. Without it, every dependency change would re-open lanes the
+   * viewer had just deliberately shut, so Collapse all would spring back the moment
+   * anything else on the page changed.
+   */
+  const seeded = useRef(false);
+
+  /**
+   * Open the lanes this person is answerable for, once both answers are in.
+   *
+   * The default used to be all-collapsed, which is right for a stranger and wrong for
+   * everybody else: the two lanes you are DRI or Support on are the reason you opened
+   * the page, and making you find and expand them every time is a chevron hunt down a
+   * list of nine. Everything else stays shut - see isResponsibleFor in
+   * utils/projects.ts for why Support counts, and why owning a phase does not.
+   *
+   * Gated on `identity !== null`, which is "/api/me has answered" rather than "somebody
+   * is signed in". Seeding before that lands would open nothing, burn the one-shot, and
+   * leave the page in exactly the all-collapsed state this exists to replace.
+   *
+   * If /api/me never answers, this never runs and the page keeps its old behaviour.
+   * That is the correct failure: we do not know whose lanes to open, and guessing would
+   * either open all nine or claim a responsibility that is not ours to claim.
+   */
+  useEffect(() => {
+    if (seeded.current || identity === null || !roadmap) {
+      return;
+    }
+    seeded.current = true;
+    const mine = responsibleProjectIds(roadmap.projects, identity.email);
+    if (mine.size > 0) {
+      // Guarded, so a viewer who is on nothing does not get a pointless re-render
+      // replacing one empty set with another.
+      setExpanded(mine);
+    }
+  }, [identity, roadmap]);
 
   /**
    * Rewrite one lane in place, leaving the rest of the roadmap alone.
@@ -274,9 +325,31 @@ export default function RoadmapPage() {
     );
   }, [stored, draftOrder]);
 
-  /** The rows a save would actually write. Empty means Save has nothing to do. */
+  /** The rows a save would actually write, which is not the same as what moved. */
   const pendingOrder = useMemo(
     () => (draftOrder ? laneOrderChanges(draftOrder, stored) : []),
+    [draftOrder, stored]
+  );
+
+  /**
+   * Whether the ARRANGEMENT differs from the stored one - the question Save asks.
+   *
+   * Not `pendingOrder.length > 0`, and the difference is not pedantic. The workbook
+   * seed left lane_order sparse (0, 0, 10, 20), so laneOrderChanges has three rows to
+   * renumber the instant the mode opens, before anybody has touched a thing. Gating
+   * Save on that offers to save an edit the user did not make, and the toolbar
+   * announces "3 lanes will be renumbered" as their opening greeting.
+   *
+   * Comparing positions instead also gets move-and-move-back right: the arrangement is
+   * unchanged, so Save goes quiet, even though the renumbering that would tidy the
+   * sparse values is still outstanding. Normalisation is a side effect of saving a real
+   * change, never a reason to prompt for one.
+   */
+  const orderChanged = useMemo(
+    () =>
+      draftOrder !== null &&
+      (draftOrder.length !== stored.length ||
+        stored.some((project, index) => draftOrder[index] !== project.project_id)),
     [draftOrder, stored]
   );
 
@@ -285,7 +358,7 @@ export default function RoadmapPage() {
   }, []);
 
   const saveOrder = useCallback(async () => {
-    if (!draftOrder || pendingOrder.length === 0) {
+    if (!draftOrder || !orderChanged || pendingOrder.length === 0) {
       setDraftOrder(null);
       return;
     }
@@ -323,7 +396,7 @@ export default function RoadmapPage() {
     } finally {
       setSavingOrder(false);
     }
-  }, [draftOrder, pendingOrder, load]);
+  }, [draftOrder, orderChanged, pendingOrder, load]);
 
   const grid = useMemo(() => {
     const dates = projects.flatMap((project) => [
@@ -372,17 +445,20 @@ export default function RoadmapPage() {
             <PrimaryButton
               type="button"
               onClick={() => void saveOrder()}
-              disabled={savingOrder || pendingOrder.length === 0}
+              disabled={savingOrder || !orderChanged}
             >
               {savingOrder ? 'Saving…' : 'Save order'}
             </PrimaryButton>
             {/* Says where the controls are, because they are in the lane label column
                 rather than up here, and a mode whose controls you have to hunt for is
-                a mode people back out of. */}
+                a mode people back out of. Once something has moved it reports the
+                number of ROWS THAT WILL BE WRITTEN, which is often more than the
+                number moved - saving also densifies the sparse orders the workbook
+                seed left behind, and that is worth stating rather than doing quietly. */}
             <Hint>
-              {pendingOrder.length === 0
-                ? 'Use the arrows beside each project name to move it up or down.'
-                : `${pendingOrder.length} lane${pendingOrder.length === 1 ? '' : 's'} will be renumbered.`}
+              {orderChanged
+                ? `${pendingOrder.length} lane${pendingOrder.length === 1 ? '' : 's'} will be renumbered.`
+                : 'Use the arrows beside each project name to move it up or down.'}
             </Hint>
           </>
         ) : (

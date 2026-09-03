@@ -17,6 +17,20 @@ node_modules/
 dist/
 .env.local
 
+# Build-time config for `npm run build`. Kept local, NOT committed.
+#
+# These are not secrets - a browser app ships its user pool and client id in the
+# bundle in order to sign anyone in, and the client is configured with no secret for
+# exactly that reason - but they are deployment specifics and do not belong on a
+# public remote. See .env.production.example for the shape.
+#
+# The consequence to know about: `npm run build` with this file absent produces a
+# bundle where isAuthConfigured is false and the app renders with NO sign-in screen.
+# Against CloudFront that still "works" - API Gateway 401s every call - so it presents
+# as a broken API rather than a missing login. If you have just cloned this repo, copy
+# the example and fill it in before building.
+.env.production
+
 # `tsc -b` incremental state. Machine-specific absolute paths; conflicts on every
 # merge and tells a checkout nothing.
 tsconfig.tsbuildinfo

@@ -64,7 +64,7 @@ const Block = styled.div<{ $left: number; $width: number }>`
   height: ${BAR_HEIGHT}px;
   display: flex;
   flex-direction: column;
-  border: 1px solid rgba(46, 21, 36, 0.22);
+  border: 1px solid ${palette.hairlineStrong};
   border-radius: ${radius.sm};
   overflow: hidden;
   background: ${palette.card};
@@ -82,7 +82,14 @@ const Stripe = styled.div<{ $fill: string; $unknown: boolean }>`
 
   /* Hatched when progress is not recorded. The one piece of the progress grammar
      that survives into a 6px stripe, because null-versus-zero is the distinction
-     this app exists to keep. */
+     this app exists to keep.
+
+     The white here and in the hairline below is deliberately NOT a theme variable,
+     and is the only white left in the app that is not. It is drawn on $fill - a
+     lifecycle colour, which is the same in both themes by decision - so it has no
+     relationship with the page behind it. Swapping it for something ink-coloured in
+     dark mode would put a dark hatch on a bright pink bar to match a background it
+     never touches. See STATE_STYLE in styles/theme.ts. */
   ${(p) =>
     p.$unknown &&
     `

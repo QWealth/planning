@@ -196,8 +196,8 @@ const Result = styled.div`
   margin-top: 12px;
   padding: 12px 14px;
   border-radius: ${radius.lg};
-  background: rgba(224, 33, 138, 0.05);
-  border: 1px solid rgba(224, 33, 138, 0.18);
+  background: ${palette.pinkWash};
+  border: 1px solid ${palette.pinkWashStrong};
 `;
 
 const Summary = styled.p`
@@ -221,8 +221,8 @@ const Message = styled.textarea`
   line-height: 1.5;
   padding: 10px;
   border-radius: ${radius.sm};
-  border: 1px solid rgba(224, 33, 138, 0.25);
-  background: #ffffff;
+  border: 1px solid ${palette.pinkWashStrong};
+  background: ${palette.card};
   color: ${palette.ink};
 `;
 

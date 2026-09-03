@@ -8,9 +8,26 @@
 
 import styled, { createGlobalStyle, css } from 'styled-components';
 
-import { card, field, focusRing, fontStack, monoStack, palette, radius, shadow } from './theme';
+import {
+  card,
+  field,
+  focusRing,
+  fontStack,
+  monoStack,
+  palette,
+  radius,
+  shadow,
+  themeVars,
+} from './theme';
 
 export const GlobalStyle = createGlobalStyle`
+  /*
+    Every colour in the app, and its dark counterpart. First in the file because a
+    custom property has to be declared on an ancestor before anything can read it, and
+    :root is as high as it goes. See theme.ts - this is the whole of the dark mode.
+  */
+  ${themeVars}
+
   *,
   *::before,
   *::after {
@@ -29,10 +46,13 @@ export const GlobalStyle = createGlobalStyle`
     font-size: 14px;
     line-height: 1.45;
     color: ${palette.ink};
-    /* A very quiet vertical wash rather than a flat fill, so the white cards read
-       as sitting on something. Fixed attachment so it does not scroll away on a
-       long roadmap. */
-    background: linear-gradient(170deg, ${palette.blush} 0%, #FFE9F4 100%) fixed;
+    /* A very quiet vertical wash rather than a flat fill, so the cards read as
+       sitting on something. Fixed attachment so it does not scroll away on a long
+       roadmap. Both stops are variables: in the dark theme the wash runs the other
+       way round - a plum-black that deepens downward rather than a white that
+       pinkens - and a hard-coded second stop was the one thing keeping the page
+       white at the bottom of a long scroll. */
+    background: linear-gradient(170deg, ${palette.blush} 0%, ${palette.groundEnd} 100%) fixed;
     -webkit-font-smoothing: antialiased;
   }
 
@@ -97,7 +117,7 @@ const buttonBase = css`
 export const PrimaryButton = styled.button`
   ${buttonBase};
   background: ${palette.hotPink};
-  color: #ffffff;
+  color: ${palette.onAccent};
   box-shadow: ${shadow.card};
 
   &:not(:disabled):hover {
@@ -130,7 +150,7 @@ export const DangerButton = styled(SecondaryButton)`
 
   &:not(:disabled):hover {
     background: ${palette.danger};
-    color: #ffffff;
+    color: ${palette.onAccent};
   }
 `;
 
@@ -144,7 +164,7 @@ export const DangerButton = styled(SecondaryButton)`
 export const ToggleButton = styled.button<{ $on: boolean }>`
   ${buttonBase};
   background: ${(p) => (p.$on ? palette.deepMagenta : palette.card)};
-  color: ${(p) => (p.$on ? '#ffffff' : palette.inkSoft)};
+  color: ${(p) => (p.$on ? palette.onAccent : palette.inkSoft)};
   border-color: ${(p) => (p.$on ? palette.deepMagenta : palette.border)};
 
   &:not(:disabled):hover {
@@ -193,6 +213,24 @@ export const Hint = styled.span`
   letter-spacing: 0;
   text-transform: none;
   color: ${palette.inkSoft};
+`;
+
+/**
+ * The gap where a lazily-loaded page will appear.
+ *
+ * Deliberately plain text and not a spinner or a skeleton. On a warm cache the chunk
+ * arrives in a few milliseconds, and an animation that flashes for one frame is more
+ * distracting than a word that does; on a cold load the honest thing to say is that
+ * something is being fetched. `min-height` keeps the masthead from jumping up and
+ * then back down as the page swaps in.
+ */
+export const PageLoading = styled.p`
+  margin: 0;
+  padding: 48px 0;
+  min-height: 220px;
+  text-align: center;
+  color: ${palette.inkSoft};
+  font-size: 13px;
 `;
 
 export const ErrorText = styled.p`

@@ -125,6 +125,7 @@ class PlanningRoadmapStack(cdk.Stack):
             "LambdaStack",
             projects_table=dynamodb_stack.projects_table,
             people_table=dynamodb_stack.people_table,
+            work_table=dynamodb_stack.work_table,
             audit_table=dynamodb_stack.audit_table,
             user_pool=cognito_stack.user_pool,
             env_name=env_name,

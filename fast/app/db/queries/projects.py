@@ -7,7 +7,6 @@ for why the project row sorts first.
 
 import logging
 import uuid
-from datetime import date, datetime
 from typing import Any, Optional
 
 import boto3
@@ -22,8 +21,13 @@ from app.db.models import (
     MilestoneModel,
     PhaseModel,
     ProjectModel,
-    to_decimal,
 )
+
+# ValidationError and _iso are re-exported rather than defined here: routes and tests
+# reach for them as `q.ValidationError` and `q._iso`, so moving the definitions into
+# the shared module had to leave both names resolvable on this one.
+from app.db.queries._updates import ValidationError, apply_update
+from app.db.queries._updates import iso as _iso
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +47,7 @@ PHASE_UPDATABLE = {
     "progress",
     "structural",
 }
-MILESTONE_UPDATABLE = {"name", "date", "note", "done"}
+MILESTONE_UPDATABLE = {"name", "date", "note", "done", "phase_id"}
 
 
 def _sort_milestones(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -58,20 +62,9 @@ def _sort_milestones(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-class ValidationError(Exception):
-    """A write the data model refuses. Routes turn this into a 400."""
-
-
 def get_projects_table():
     """Get the projects table."""
     return dynamodb.Table(config.PROJECTS_TABLE_NAME)
-
-
-def _iso(value: Any) -> Any:
-    """Dates go to DynamoDB as ISO strings; everything else passes through."""
-    if isinstance(value, date) and not isinstance(value, datetime):
-        return value.isoformat()
-    return value
 
 
 def _new_id() -> str:
@@ -236,6 +229,19 @@ def create_project(
 
     milestone_items = []
     for milestone in milestones or []:
+        # No phase_id on this path, and a sent one is refused rather than dropped.
+        # The phases in this same call are getting their ids right here, a few lines
+        # up, so there is no id a caller could possibly have meant - any string they
+        # sent names a phase of some OTHER project. Silently storing it would file the
+        # milestone under a heading this lane never draws; silently ignoring it would
+        # accept the request and lose the attachment. Say so instead, and let the
+        # caller attach it with a PATCH once the phase has an id.
+        if milestone.get("phase_id"):
+            raise ValidationError(
+                "a milestone cannot name a phase while the project is being created - "
+                "the phases in this request do not have ids yet. Create the project, "
+                "then PATCH the milestone with its phase_id."
+            )
         milestone_items.append(
             MilestoneModel.create_item(
                 project_id=project_id,
@@ -276,52 +282,18 @@ def _apply_update(
     allowed: set[str],
 ) -> dict[str, Any]:
     """
-    SET every field in `changes`, including the ones whose value is None.
+    SET every field in `changes` on this table, including the None ones.
 
-    This is the counterpart to UNSET in db/models.py, and the difference from the
-    marketing tool's update_rule is the point of the function. That one skips a
-    field whose value is None, treating None as "not supplied". Here the caller has
-    already separated the two - `changes` holds only fields the request actually
-    mentioned - so a None that reaches this point is an explicit instruction to
-    store null. Clearing a phase's dates is how you say "this slipped and has not
-    been re-planned", and it has to be expressible.
+    The body of this lives in queries/_updates.py, because queries/work.py needs the
+    identical behaviour against a different table. Read the docstring there for why a
+    None reaching it means "store null" rather than "not supplied" - that distinction
+    is the reason this app exists and it is defended in three places.
 
-    Every attribute goes through a #name alias. "name" and "end" are both DynamoDB
-    reserved words, and rather than special-case them, aliasing everything means a
-    field added later cannot reintroduce the problem.
+    The table is resolved here, at call time, rather than inside the helper. That is
+    what keeps `projects.dynamodb = ddb` working as a monkeypatch point in demo.py
+    and the tests.
     """
-    unknown = set(changes) - allowed
-    if unknown:
-        raise ValidationError(f"cannot update: {', '.join(sorted(unknown))}")
-
-    parts = ["#updated_at = :updated_at"]
-    names = {"#updated_at": "updated_at"}
-    values: dict[str, Any] = {":updated_at": datetime.utcnow().isoformat()}
-
-    for field, value in changes.items():
-        parts.append(f"#{field} = :{field}")
-        names[f"#{field}"] = field
-        values[f":{field}"] = to_decimal(_iso(value))
-
-    try:
-        response = get_projects_table().update_item(
-            Key=key,
-            UpdateExpression="SET " + ", ".join(parts),
-            ExpressionAttributeNames=names,
-            ExpressionAttributeValues=values,
-            # Refuse to resurrect a deleted row as a stub. Without this, updating a
-            # phase that another user has just removed silently recreates it holding
-            # only the fields in this request - a phase with no name and no dates,
-            # which then renders as a blank band nobody can account for.
-            ConditionExpression="attribute_exists(project_id)",
-            ReturnValues="ALL_NEW",
-        )
-        return response.get("Attributes", {})
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            raise ValidationError("no such record") from e
-        logger.error("Error updating %s: %s", key, e)
-        raise
+    return apply_update(get_projects_table(), key, changes, allowed, "project_id")
 
 
 def update_project(project_id: str, changes: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -442,8 +414,40 @@ def get_milestone(project_id: str, milestone_id: str) -> Optional[dict[str, Any]
     return MilestoneModel.from_item(item) if item else None
 
 
+def _check_phase_ref(project_id: str, phase_id: Optional[str]) -> None:
+    """
+    Refuse a phase_id that does not name a phase of THIS project.
+
+    None is fine and is the common case - a milestone that belongs to the lane as a
+    whole. What is not fine is a string that names nothing, or names a phase of some
+    other project: DynamoDB has no foreign keys, so either would be stored happily
+    and then group the milestone under a heading this project never draws. The row
+    would exist, be returned by the API, and appear nowhere - the exact failure this
+    codebase keeps refusing to allow.
+
+    Scoped to the project rather than "does this phase exist anywhere", because the
+    phase table is partitioned on project_id and a cross-project reference is the
+    mistake a copied id actually produces.
+    """
+    if not phase_id:
+        return
+    if get_phase(project_id, phase_id) is None:
+        raise ValidationError(
+            f"phase_id {phase_id!r} is not a phase of this project"
+        )
+
+
 def create_milestone(project_id: str, milestone: dict[str, Any]) -> dict[str, Any]:
-    """Add a milestone to an existing project."""
+    """
+    Add a milestone to an existing project.
+
+    Checked before the write, not after: an unattached milestone is recoverable by
+    editing it, but one stored against a phase that does not exist is invisible on
+    the chart, which is a harder thing to notice than a 400.
+    """
+    phase_id = milestone.get("phase_id") or None
+    _check_phase_ref(project_id, phase_id)
+
     item = MilestoneModel.create_item(
         project_id=project_id,
         milestone_id=_new_id(),
@@ -451,6 +455,7 @@ def create_milestone(project_id: str, milestone: dict[str, Any]) -> dict[str, An
         date=_iso(milestone.get("date")),
         note=milestone.get("note"),
         done=milestone.get("done", False),
+        phase_id=phase_id,
     )
     try:
         get_projects_table().put_item(Item=item)
@@ -464,18 +469,28 @@ def update_milestone(
     project_id: str, milestone_id: str, changes: dict[str, Any]
 ) -> Optional[dict[str, Any]]:
     """
-    Update a milestone.
+    Update a milestone, checking any phase it is being moved under.
 
-    No cross-field rule to enforce here - a milestone is one date, so there is no
-    ordering to get wrong. Clearing the date back to null is a legitimate edit
-    meaning "this is still needed but the commitment has gone", and _apply_update
-    stores that rather than skipping it.
+    There is still no ordering rule to get wrong - a milestone is one date - so the
+    check here is a reference check rather than update_phase's merged-result check.
+    Clearing the date back to null is a legitimate edit meaning "this is still needed
+    but the commitment has gone", and _apply_update stores that rather than skipping
+    it; `"phase_id": null` is the same kind of edit, meaning "this belongs to the
+    project, not to that stage".
+
+    Only validated when `phase_id` was actually SENT. Testing the merged value
+    instead would re-check the stored attachment on every unrelated PATCH, so a
+    milestone left pointing at a phase somebody deleted by hand would refuse to have
+    its name fixed - punishing the wrong edit for a mess it did not make.
     """
     if not changes:
         return get_milestone(project_id, milestone_id)
 
     if get_milestone(project_id, milestone_id) is None:
         return None
+
+    if "phase_id" in changes:
+        _check_phase_ref(project_id, changes["phase_id"])
 
     item = _apply_update(
         {"project_id": project_id, "sk": MilestoneModel.sk(milestone_id)},
@@ -498,15 +513,66 @@ def delete_milestone(project_id: str, milestone_id: str) -> bool:
     return bool(response.get("Attributes"))
 
 
+def detach_phase_milestones(project_id: str, phase_id: str) -> list[str]:
+    """
+    Un-file every milestone that names this phase, and say which ones.
+
+    DELETING A PHASE PROMOTES ITS MILESTONES, IT DOES NOT TAKE THEM WITH IT
+    ----------------------------------------------------------------------
+    The same rule the work entity follows when a ticket is deleted, and for the same
+    reason: a milestone is a commitment somebody made, and "we restructured the
+    phases" is not a decision to drop it. A regulatory date does not stop mattering
+    because the stage it was filed under got merged into another one.
+
+    Doing nothing is the option that looks cheapest and is worst. The id would
+    survive as a reference to a phase that is gone, and the milestone would group
+    under a heading nothing draws - stored, returned by the API, invisible. Setting
+    it to null puts the milestone back where an unattached one lives, which is a
+    place the chart already knows how to render.
+
+    Returns the ids it changed, so a caller that cares can log or audit them. The
+    route does audit them, one row per milestone: a bulk edit nobody recorded is how
+    a chart quietly stops matching its own history.
+    """
+    project = get_project(project_id)
+    if project is None:
+        return []
+
+    detached: list[str] = []
+    for milestone in project.get("milestones", []):
+        if milestone.get("phase_id") != phase_id:
+            continue
+        _apply_update(
+            {"project_id": project_id, "sk": MilestoneModel.sk(milestone["milestone_id"])},
+            {"phase_id": None},
+            MILESTONE_UPDATABLE,
+        )
+        detached.append(milestone["milestone_id"])
+
+    if detached:
+        logger.info(
+            "Detached %d milestone(s) from deleted phase %s/%s",
+            len(detached), project_id, phase_id,
+        )
+    return detached
+
+
 def delete_phase(project_id: str, phase_id: str) -> bool:
     """
-    Hard-delete a phase.
+    Hard-delete a phase, first detaching any milestones filed under it.
 
-    Unlike a project, a phase is a row on a chart with no children to orphan, and
-    "we are not doing that stage" is an ordinary edit rather than a decommissioning.
-    The audit entry carries the full before-snapshot, so the content is recoverable
-    from the history even though the row is not.
+    "We are not doing that stage" is an ordinary edit rather than a decommissioning,
+    so unlike a project this is a real delete. The audit entry carries the full
+    before-snapshot, so the content is recoverable from the history even though the
+    row is not.
+
+    The detach runs BEFORE the delete, because it reads the phase's own row to find
+    the project and would find nothing afterwards. It is deliberately not a
+    transaction: worst case the milestones are unattached and the phase survives,
+    which is a visible, correctable state - the reverse order risks the invisible one.
     """
+    detach_phase_milestones(project_id, phase_id)
+
     try:
         response = get_projects_table().delete_item(
             Key={"project_id": project_id, "sk": PhaseModel.sk(phase_id)},

@@ -100,7 +100,7 @@ const Roster = styled.ul`
 const Row = styled.li<{ $inactive: boolean }>`
   border: 1px solid ${palette.border};
   border-radius: ${radius.md};
-  background: ${(p) => (p.$inactive ? '#FBF6F9' : palette.card)};
+  background: ${(p) => (p.$inactive ? palette.inactive : palette.card)};
   /* Deactivated people stay legible rather than being faded to grey. They are still
      the recorded owner of real work, and the roadmap will keep showing their name. */
   opacity: ${(p) => (p.$inactive ? 0.75 : 1)};
@@ -203,7 +203,7 @@ const SkillChip = styled.span<{ $stars: number; $learning: boolean }>`
   padding: 2px 9px;
   white-space: nowrap;
   color: ${(p) =>
-    p.$stars >= 3 ? '#ffffff' : p.$stars === 0 ? palette.deepMagenta : palette.ink};
+    p.$stars >= 3 ? palette.onAccent : p.$stars === 0 ? palette.deepMagenta : palette.ink};
   background: ${(p) =>
     p.$stars >= 3 ? palette.hotPink : p.$stars === 0 ? palette.card : palette.blush};
   border: 1px ${(p) => (p.$stars === 0 ? 'dashed' : 'solid')}

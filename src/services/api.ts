@@ -28,10 +28,17 @@ import type {
   ProjectCreate,
   ProjectPatch,
   ProjectSummary,
+  Rfc,
+  RfcCreate,
+  RfcPatch,
   Roadmap,
   RoleInfo,
   SkillInfo,
   SlackDirectory,
+  StatusInfo,
+  Task,
+  TaskCreate,
+  TaskPatch,
 } from '../types';
 import { getIdToken } from './auth';
 
@@ -346,6 +353,21 @@ export async function getRoles(): Promise<RoleInfo[]> {
   return response.data;
 }
 
+/**
+ * The roster alone - no assignments, no phase counts.
+ *
+ * Separate from getWorkload because the board only needs a list of people to assign
+ * work TO, and /people/workload carries every phase everybody owns to answer that.
+ * Active only, by default: assigning a project's backlog to somebody who has left is
+ * not a choice the picker should offer.
+ */
+export async function getPeople(includeInactive = false): Promise<Person[]> {
+  const response = await apiClient.get<Person[]>('/people', {
+    params: includeInactive ? { include_inactive: true } : undefined,
+  });
+  return response.data;
+}
+
 /** Everyone, with what they own. The Team page's primary read. */
 export async function getWorkload(): Promise<PersonWorkload[]> {
   const response = await apiClient.get<PersonWorkload[]>('/people/workload');
@@ -470,6 +492,143 @@ export async function deletePerson(email: string): Promise<PersonDeleted> {
     `/people/${encodeURIComponent(email)}`
   );
   return response.data;
+}
+
+/**
+ * The RFC status vocabulary: draft, review, accepted, rejected, withdrawn.
+ *
+ * Fetched rather than hardcoded, for the same reason as getSkills above. The list
+ * lives in fast/app/work.py, and a copy here would drift: a status renamed on the
+ * server stops matching the values already stored against real documents, which then
+ * render with a raw slug or vanish from a filter that no longer matches them.
+ */
+export async function getRfcStatuses(): Promise<StatusInfo[]> {
+  const response = await apiClient.get<StatusInfo[]>('/rfcs/statuses');
+  return response.data;
+}
+
+/**
+ * Every RFC, most recently updated first.
+ *
+ * Bodies included — the API returns whole documents, and this deliberately does not
+ * ask for a summary projection. There are tens of these, not thousands, and the one
+ * screen that lists them wants to show a first line; a list endpoint that stripped
+ * the body would mean a second request per row to get it back.
+ */
+export async function getRfcs(): Promise<Rfc[]> {
+  const response = await apiClient.get<Rfc[]>('/rfcs');
+  return response.data;
+}
+
+/** One RFC. Throws on 404, which the page turns into "this has been deleted". */
+export async function getRfc(itemId: string): Promise<Rfc> {
+  const response = await apiClient.get<Rfc>(`/rfcs/${encodeURIComponent(itemId)}`);
+  return response.data;
+}
+
+/**
+ * Write a new RFC.
+ *
+ * Sends the whole body, which is the create-path half of the absent/null discipline:
+ * there is no stored row to leave alone, so an omitted field takes the server's
+ * default, and every default here is the honest one — no project, no owner, draft,
+ * undecided.
+ */
+export async function createRfc(body: RfcCreate): Promise<Rfc> {
+  const response = await apiClient.post<Rfc>('/rfcs', body);
+  return response.data;
+}
+
+/**
+ * Edit an RFC. Same absent/null rule as patchPhase, and it bites hardest here.
+ *
+ * `project_id: null` detaches the document from its project — a real edit, and the
+ * reason the feature was asked for. Omitting project_id leaves it attached. The
+ * editor builds this from React Hook Form's dirtyFields so that fixing a typo in the
+ * title cannot unfile the document as a side effect.
+ */
+export async function patchRfc(itemId: string, patch: RfcPatch): Promise<Rfc> {
+  const response = await apiClient.patch<Rfc>(`/rfcs/${encodeURIComponent(itemId)}`, patch);
+  return response.data;
+}
+
+/**
+ * Delete an RFC outright. There is no soft delete and there should not be.
+ *
+ * `withdrawn` is the status for retiring a proposal while keeping its reasoning
+ * readable, and it is what almost every retirement should use. Reaching for this
+ * means the document was created by mistake. The audit row keeps the full
+ * before-snapshot including the body, so the text is recoverable by someone with
+ * access to the table.
+ */
+export async function deleteRfc(itemId: string): Promise<void> {
+  await apiClient.delete(`/rfcs/${encodeURIComponent(itemId)}`);
+}
+
+/* ------------------------------------------------------------------ tasks -- */
+
+export async function getTaskStatuses(): Promise<StatusInfo[]> {
+  const response = await apiClient.get<StatusInfo[]>('/tasks/statuses');
+  return response.data;
+}
+
+/**
+ * Every task — tickets and subtasks together, most recently updated first.
+ *
+ * ONE request for both levels, not one per ticket. The API does support
+ * `?parent_id=`, and calling it per ticket would be N+1 round trips against a Lambda
+ * that scales to zero: thirty tickets, thirty cold-start-eligible calls, to draw one
+ * board. The whole set is tens of rows, so the board splits it by `parent_id` in
+ * memory — which is only trivial because nesting is capped at one level.
+ */
+export async function getTasks(): Promise<Task[]> {
+  const response = await apiClient.get<Task[]>('/tasks');
+  return response.data;
+}
+
+/** One task. Throws on 404, which the page turns into "this has been deleted". */
+export async function getTask(itemId: string): Promise<Task> {
+  const response = await apiClient.get<Task>(`/tasks/${encodeURIComponent(itemId)}`);
+  return response.data;
+}
+
+/**
+ * Create a ticket, or a subtask of one when `parent_id` is set.
+ *
+ * The one-level cap is enforced by the backend, which refuses a parent that is
+ * itself a subtask. The board also hides the affordance, but hiding a button is a
+ * convenience and not a rule — the rule has to live where it cannot be skipped by a
+ * second client or a curl.
+ */
+export async function createTask(body: TaskCreate): Promise<Task> {
+  const response = await apiClient.post<Task>('/tasks', body);
+  return response.data;
+}
+
+/**
+ * Edit a task. Same absent/null rule as everywhere; `parent_id` is the sharp edge.
+ *
+ * `parent_id: null` PROMOTES a subtask to a top-level ticket, and omitting it leaves
+ * the task where it is. TaskEditor builds this from dirtyFields for that reason: a
+ * form that helpfully sent every field would re-assert the parent on every save,
+ * which looks harmless until it re-asserts one somebody had just cleared.
+ */
+export async function patchTask(itemId: string, patch: TaskPatch): Promise<Task> {
+  const response = await apiClient.patch<Task>(`/tasks/${encodeURIComponent(itemId)}`, patch);
+  return response.data;
+}
+
+/**
+ * Delete a task. Deleting a ticket PROMOTES its subtasks — it does not cascade.
+ *
+ * That matters at the call site, because it makes the caller's local state wrong in
+ * an invisible way: the children are still in memory pointing at a parent that no
+ * longer exists, so a view filtering "subtasks of X" stops showing them rather than
+ * showing them at the top level where the server has just put them. Refetch after
+ * this; do not splice the deleted row out of the array.
+ */
+export async function deleteTask(itemId: string): Promise<void> {
+  await apiClient.delete(`/tasks/${encodeURIComponent(itemId)}`);
 }
 
 export default apiClient;

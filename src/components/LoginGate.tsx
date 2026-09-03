@@ -86,22 +86,67 @@ const AuthShell = styled.div`
     box-shadow: ${shadow.raised};
   }
 
+  /*
+    Amplify's TEXT colours, set as a plain color property rather than through its
+    tokens - and
+    this is the one trap on the whole screen worth reading before editing.
+
+    The token remaps above do inherit. --amplify-colors-font-primary computes to our
+    ink on every node inside this shell, including the input itself. The input is still
+    drawn in hsl(210 50% 10%), Amplify's own near-black blue-grey, because Amplify
+    declares its COMPONENT tokens at :root -
+    --amplify-components-fieldcontrol-color: var(--amplify-colors-font-primary) - and a
+    custom property's var() is substituted where it is DECLARED, not where it is used.
+    That substitution happened at :root against Amplify's default palette, long before
+    anything we set on a descendant was visible. Adding more --amplify-colors-* remaps
+    cannot fix it; only overriding the component token or setting the property wins, and
+    setting the property does not require knowing every token name they ship.
+
+    In light mode this was invisible - their near-black on our white is merely the wrong
+    near-black. In dark mode it is a 1.15:1 input and a 1.79:1 label on a black card,
+    i.e. a form you cannot read, which is exactly the failure a theme switch is prone to
+    and exactly the one no unit test catches.
+  */
+  .amplify-label {
+    color: ${palette.inkSoft};
+  }
+
   .amplify-input,
   .amplify-select {
     background: ${palette.blush};
     border: 1px solid ${palette.border};
     border-radius: ${radius.sm};
     font-family: ${fontStack};
+    color: ${palette.ink};
+
+    &::placeholder {
+      /* opacity:1 because Firefox dims the placeholder again on top of the colour. */
+      color: ${palette.inkSoft};
+      opacity: 1;
+    }
+  }
+
+  /* The show/hide-password toggle: a field-group button, so it misses both the primary
+     and the link rules and would otherwise keep Amplify's default ink. */
+  .amplify-field__show-password,
+  .amplify-field-group__outer-end .amplify-button {
+    background: ${palette.blush};
+    border: 1px solid ${palette.border};
+    color: ${palette.inkSoft};
   }
 
   .amplify-button--primary {
     background: ${palette.hotPink};
+    /* Not white. In dark mode the accent is LIGHTER than the page, so white-on-pink
+       falls to 2.93:1; onAccent is the token that flips with the fill. */
+    color: ${palette.onAccent};
     border-radius: ${radius.pill};
     font-family: ${fontStack};
     font-weight: 700;
 
     &:hover:not(:disabled) {
       background: ${palette.deepMagenta};
+      color: ${palette.onAccent};
     }
   }
 

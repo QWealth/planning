@@ -23,7 +23,7 @@
 
 import styled from 'styled-components';
 
-import { palette, radius, STATE_STYLE, type PhaseState } from '../../styles/theme';
+import { palette, radius, shadow, STATE_STYLE, type PhaseState } from '../../styles/theme';
 import { formatLong, place, placeDay, type Grid } from '../../utils/dates';
 
 const BAR_HEIGHT = 20;
@@ -136,7 +136,7 @@ const Diamond = styled.div<{ $left: number; $fill: string }>`
   border: 1px solid ${palette.card};
   border-radius: 3px;
   transform: rotate(45deg);
-  box-shadow: 0 1px 3px rgba(94, 17, 56, 0.3);
+  box-shadow: ${shadow.mark};
 `;
 
 /**

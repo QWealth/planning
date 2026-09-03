@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from mangum import Mangum
 
 from app import config
-from app.routes import identity, people, projects, roadmap, service, slack
+from app.routes import identity, people, projects, roadmap, service, slack, work
 
 # Configure logging.
 #
@@ -47,6 +47,11 @@ app.include_router(people.skills_router)
 app.include_router(people.roles_router)
 app.include_router(projects.router)
 app.include_router(roadmap.router)
+
+# RFCs and tasks. Two routers over one table - see routes/work.py for why the two
+# kinds do not share a prefix even though they share every access pattern.
+app.include_router(work.router)
+app.include_router(work.tasks_router)
 
 # The Slack directory the invite picker is built from. Read-only and admin-only, and
 # it creates no roster rows - see routes/slack.py for why that separation matters.

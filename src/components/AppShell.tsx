@@ -20,13 +20,13 @@
  * because a second /api/me would be a second chance to disagree with the first.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import { NavLink, Outlet, useOutletContext } from 'react-router-dom';
 import styled from 'styled-components';
 
 import { describeError, getIdentity } from '../services/api';
 import { palette, radius } from '../styles/theme';
-import { ErrorText, Panel, SecondaryButton } from '../styles/ui';
+import { ErrorText, Panel, PageLoading, SecondaryButton } from '../styles/ui';
 import type { Identity } from '../types';
 import type { AuthState } from './LoginGate';
 import Onboarding from './Onboarding';
@@ -67,7 +67,7 @@ const Nav = styled.nav`
   align-items: center;
   gap: 4px;
   padding: 3px;
-  background: rgba(224, 33, 138, 0.07);
+  background: ${palette.pinkWash};
   border-radius: ${radius.pill};
 `;
 
@@ -93,7 +93,7 @@ const Tab = styled(NavLink)`
 
   &.active {
     background: ${palette.hotPink};
-    color: #ffffff;
+    color: ${palette.onAccent};
   }
 `;
 
@@ -179,6 +179,14 @@ export default function AppShell({ auth }: { auth: AuthState }) {
             Roadmap
           </Tab>
           <Tab to="/team">Team</Tab>
+          {/* No `end`: /rfcs/{id} is still the RFCs section, and the tab should stay
+              lit while you are reading one. The opposite of the index tab above. */}
+          <Tab to="/rfcs">RFCs</Tab>
+          {/* Also no `end`, for the same reason: /tasks/{id} is still the board's
+              section. Last because it is the most day-to-day of the four and the
+              order of the tabs is roughly widest scope to narrowest - the roadmap is
+              the year, the board is the week. */}
+          <Tab to="/tasks">Board</Tab>
         </Nav>
         <Spacer />
         {identity?.email ? <Status>{identity.email}</Status> : null}
@@ -191,11 +199,25 @@ export default function AppShell({ auth }: { auth: AuthState }) {
 
       {error ? <ErrorText role="alert">{error}</ErrorText> : null}
 
-      {/* Null until /api/me answers. Pages must treat that as "not an admin yet"
-          rather than blocking on it - the roadmap is readable by everybody, so
-          waiting for an authorisation answer to draw it would be a spinner for no
-          reason. See useIdentity below. */}
-      <Outlet context={identity} />
+      {/*
+        Null until /api/me answers. Pages must treat that as "not an admin yet"
+        rather than blocking on it - the roadmap is readable by everybody, so
+        waiting for an authorisation answer to draw it would be a spinner for no
+        reason. See useIdentity below.
+
+        The Suspense boundary is here, INSIDE the shell, so the masthead and tabs
+        stay on screen while a lazily-loaded page's chunk is in flight; wrapping the
+        router instead would blank the whole window on every first navigation, which
+        reads as a reload rather than a tab change.
+
+        It also has to be here rather than in a pathless route in App.tsx, because
+        the context above is passed through this very Outlet. A second Outlet inside
+        a nested route would install its own provider holding undefined, and every
+        page's useIdentity() would start reading null.
+      */}
+      <Suspense fallback={<PageLoading>Loading…</PageLoading>}>
+        <Outlet context={identity} />
+      </Suspense>
     </Page>
   );
 }

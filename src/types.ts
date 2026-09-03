@@ -61,6 +61,22 @@ export interface Milestone {
   date: string | null;
   note: string | null;
   done: boolean;
+  /**
+   * The phase this belongs to, or null for one that belongs to the project itself.
+   *
+   * NULL IS THE ORDINARY CASE, not an unfinished form. "Infra hardening signed off"
+   * sits under Infra; "Regulatory deadline" is a date the whole lane answers to and
+   * is not a step inside any one stage of it. Forcing a choice would file one of
+   * those two shapes under the other, and the phase it landed under would look like
+   * it owned a commitment nobody gave it.
+   *
+   * The API guarantees this names a phase of THIS project or is null: it refuses a
+   * dangling id on write, and detaches rather than orphans when a phase is deleted.
+   * So a lookup that misses means the payload in hand is stale, not that the row is
+   * wrong - which is why the chart falls back to drawing the milestone on the lane
+   * rather than dropping it.
+   */
+  phase_id: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -152,7 +168,16 @@ export interface SkillInfo {
  * These are the stored identifiers, never the labels - display always comes from the
  * API, so a relabelling needs no change here.
  */
-export type PersonRole = 'ba' | 'ux' | 'software-engineer' | 'qa' | 'data' | 'leadership';
+export type PersonRole =
+  | 'ba'
+  | 'ux'
+  | 'software-engineer'
+  | 'qa'
+  | 'data'
+  | 'leadership'
+  /** The catch-all: works with the team from another part of the business. Last in
+      the picker by design - see app/roles.py. */
+  | 'outside-engineering';
 
 /**
  * One entry of the role vocabulary, from `GET /api/roles`.
@@ -354,6 +379,86 @@ export interface SlackDirectory {
 }
 
 /**
+ * An RFC: a written proposal, in markdown, that may or may not belong to a project.
+ *
+ * `project_id` IS THE FEATURE. "How we do code review" is a decision about no project
+ * in particular, and there is no honest lane to file it under. It could not live in
+ * the projects table at all - project_id is that table's partition key, so
+ * "attached to nothing" would have needed a fake partition to sit in - which is why
+ * there is a separate work table underneath this. See fast/app/db/queries/work.py.
+ *
+ * `status` is a plain string rather than a union of the five values, deliberately.
+ * The vocabulary is served by /api/rfcs/statuses so that adding a sixth status is one
+ * backend deploy; a union here would make the frontend a second place that has to
+ * know the list, and the compiler would then reject a status the API had already
+ * started sending. Labels come from the catalogue, not from a map in this repo.
+ */
+export interface Rfc {
+  item_id: string;
+  kind: string;
+  title: string;
+  body: string;
+  status: string;
+  project_id: string | null;
+  owner_email: string | null;
+  /** The day it was accepted or rejected. Null while it is still open. */
+  decided_on: string | null;
+  created_by: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * A ticket or a subtask. ONE type, because they are one entity.
+ *
+ * `parent_id` is the only thing telling them apart: null means top-level (what
+ * everyone calls a ticket), set means it is a subtask of that ticket. Nesting is
+ * capped at one level by the backend and checked in BOTH directions - you cannot
+ * parent onto a subtask, and you cannot give a parent to something that already has
+ * children - so a cycle is impossible by construction.
+ *
+ * That cap is why this type never has to describe a tree, and why the board can
+ * group rows by whatever it likes without recursing.
+ *
+ * `body` is free text and is deliberately NOT markdown-rendered. A task is a line
+ * with a note attached; the thing you write paragraphs in is an RFC, and blurring
+ * that gives you two half-documents instead of one of each.
+ */
+export interface Task {
+  item_id: string;
+  kind: string;
+  title: string;
+  body: string;
+  status: string;
+  project_id: string | null;
+  /** Null for a ticket. The owning ticket's id for a subtask. */
+  parent_id: string | null;
+  owner_email: string | null;
+  /** `YYYY-MM-DD`, or null. Absent is normal - most work has no committed date. */
+  due: string | null;
+  task_order: number;
+  created_by: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * One entry of a served vocabulary: the stored value, and how to say it on screen.
+ *
+ * `closed` means the item is no longer on anyone's plate - accepted, rejected and
+ * withdrawn for an RFC. It comes from the API rather than from a list in this repo
+ * precisely so there is no list in this repo: hardcoding the three values would make
+ * the frontend a second place that has to be updated when the vocabulary changes,
+ * and the symptom of forgetting is a retired proposal that keeps rendering as live.
+ */
+export interface StatusInfo {
+  status: string;
+  label: string;
+  description: string;
+  closed: boolean;
+}
+
+/**
  * PATCH bodies.
  *
  * Every field is optional, and `undefined` and `null` mean DIFFERENT THINGS: absent
@@ -398,11 +503,67 @@ export interface PersonPatch {
   specialisations?: Specialisation[];
 }
 
+/**
+ * Editing a milestone. Absent means "leave alone"; null means "clear it".
+ *
+ * `phase_id: null` DETACHES the milestone from its phase and is a real edit - a
+ * commitment that turns out to belong to the lane as a whole rather than to the
+ * stage somebody first filed it under. Omitting `phase_id` leaves the attachment
+ * alone, which is what renaming a milestone must do. Same trap as RfcPatch's
+ * `project_id`, one level down.
+ */
 export interface MilestonePatch {
   name?: string;
   date?: string | null;
   note?: string | null;
   done?: boolean;
+  phase_id?: string | null;
+}
+
+/**
+ * Editing an RFC. The absent/null rule matters more here than anywhere else.
+ *
+ * `project_id: null` DETACHES the RFC from its project and is a real edit somebody
+ * will make - a proposal that started life inside one project turning out to be a
+ * general decision. Omitting project_id leaves the attachment alone. Get the two
+ * confused and fixing a typo in a title silently unfiles the document.
+ *
+ * `decided_on: null` means "we have un-decided this", which goes with moving the
+ * status back from accepted to review. It is not the same as never having set it,
+ * but it stores the same way, and that is fine: the audit row carries the history.
+ */
+export interface RfcPatch {
+  title?: string;
+  body?: string;
+  status?: string;
+  project_id?: string | null;
+  owner_email?: string | null;
+  decided_on?: string | null;
+}
+
+/**
+ * Editing a task. Two fields here carry the absent/null distinction into places
+ * where getting it wrong is destructive rather than merely wrong.
+ *
+ * `parent_id: null` PROMOTES a subtask to a top-level ticket. Omitting parent_id
+ * leaves it where it is. This is the same keystroke apart as RfcPatch's detach, and
+ * worse if confused: a board that promotes a subtask every time somebody fixes its
+ * title would quietly flatten the structure of the whole backlog over a week, with
+ * each individual edit looking correct.
+ *
+ * `owner_email: null` un-assigns. That is a real and common edit - work handed back
+ * to the pile is not the same as work nobody has looked at yet, but they store the
+ * same, and the audit row is what tells them apart afterwards.
+ */
+export interface TaskPatch {
+  title?: string;
+  body?: string;
+  status?: string;
+  project_id?: string | null;
+  parent_id?: string | null;
+  owner_email?: string | null;
+  due?: string | null;
+  task_order?: number;
 }
 
 export interface PersonCreate {
@@ -448,6 +609,51 @@ export interface MilestoneCreate {
   date?: string | null;
   note?: string | null;
   done?: boolean;
+  /**
+   * Optional, and absent is the common answer. Must name a phase of the project it
+   * is being posted to - the API answers 400 rather than storing a reference that
+   * resolves to nothing.
+   */
+  phase_id?: string | null;
+}
+
+/**
+ * A new RFC.
+ *
+ * `created_by` is absent on purpose and cannot be sent: the API takes it from the
+ * token, because it is the one field answering "who wrote this" and a client-supplied
+ * value could say anything. The schema does not declare it, so a body that includes
+ * it has that key dropped rather than honoured.
+ */
+export interface RfcCreate {
+  title: string;
+  body?: string;
+  status?: string;
+  project_id?: string | null;
+  owner_email?: string | null;
+  decided_on?: string | null;
+}
+
+/**
+ * A new ticket, or a new subtask of one.
+ *
+ * `parent_id` present makes it a subtask, and the backend refuses the request if
+ * that parent is itself a subtask - the one-level cap is enforced there rather than
+ * trusted here, so a board that gets its own bookkeeping wrong gets a 400 instead of
+ * a malformed tree.
+ *
+ * Everything else omitted takes the server's default, and each default is the honest
+ * one: backlog, no project, no owner, no date.
+ */
+export interface TaskCreate {
+  title: string;
+  body?: string;
+  status?: string;
+  project_id?: string | null;
+  parent_id?: string | null;
+  owner_email?: string | null;
+  due?: string | null;
+  task_order?: number;
 }
 
 /**

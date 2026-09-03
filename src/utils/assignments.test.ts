@@ -79,6 +79,10 @@ function ms(name: string, date: string | null): Milestone {
     date,
     note: null,
     done: false,
+    // Nothing in this module reads it: an assignment comes from a phase's owner and
+    // its dates, and a milestone is neither owned nor durable work. Fixed at null
+    // rather than parameterised so a future test cannot come to depend on it here.
+    phase_id: null,
     created_at: null,
     updated_at: null,
   };

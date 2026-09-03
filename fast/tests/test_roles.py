@@ -50,12 +50,17 @@ def test_roles_endpoint_serves_the_catalogue(client):
     assert [r["role"] for r in response.json()] == [r.value for r in Role]
 
 
-def test_the_six_roles_are_the_ones_that_were_asked_for(client):
+def test_the_seven_roles_are_the_ones_that_were_asked_for(client):
     """
     Pinned deliberately. The list is short and coarse on purpose - it is for reading a
     roster at a glance, and granularity belongs in skills, which is the list that
-    grows. A seventh role appearing here should be a decision somebody made, not a
+    grows. An eighth role appearing here should be a decision somebody made, not a
     diff that slipped through.
+
+    `outside-engineering` was the seventh, added by request: six of the entries name a
+    craft and somebody who does none of them - operations, product, compliance - had
+    no honest row. See the catch-all section in app/roles.py for why it is one entry
+    and not four.
     """
     assert {r.value for r in Role} == {
         "ba",
@@ -64,7 +69,20 @@ def test_the_six_roles_are_the_ones_that_were_asked_for(client):
         "qa",
         "data",
         "leadership",
+        "outside-engineering",
     }
+
+
+def test_the_catch_all_is_last(client):
+    """
+    Display order is enum order - catalogue() iterates Role directly. The catch-all
+    belongs at the bottom of the picker for the same reason `other` sits at the bottom
+    of the phase-state ranking: it is where you land when nothing above fits, and a
+    list that offers it first invites people to stop reading.
+    """
+    assert [r["role"] for r in client.get("/api/roles").json()][-1] == (
+        "outside-engineering"
+    )
 
 
 # --------------------------------------------------------------------------

@@ -14,6 +14,22 @@ AWS_REGION = os.environ.get("AWS_REGION", "ca-central-1")
 PROJECTS_TABLE_NAME = os.environ.get("PROJECTS_TABLE_NAME", "planning-roadmap-projects")
 PEOPLE_TABLE_NAME = os.environ.get("PEOPLE_TABLE_NAME", "planning-roadmap-people")
 
+# RFCs and tasks, keyed on item_id (partition) + a fixed sk, with a GSI on kind.
+#
+# Its own table rather than more sort keys on the projects table, and the reason is
+# not tidiness. `list_projects` scans that table whole, so anything parked there is
+# read and discarded on every roadmap load - the chart would slow down in proportion
+# to how much the team writes, which is backwards. And `project_id` is that table's
+# partition key, so "an RFC attached to no project" could only be expressed by
+# inventing a sentinel partition. Here it is a nullable attribute and the answer is
+# null, which is the rule the whole backend already enforces.
+#
+# The GSI's partition key is `kind`, so the RFC list does not read tasks and vice
+# versa. Two partitions is a hot-partition shape and is fine at this size on purpose;
+# see the note in cdk/lib/dynamodb_stack.py before assuming otherwise.
+WORK_TABLE_NAME = os.environ.get("WORK_TABLE_NAME", "planning-roadmap-work")
+WORK_BY_KIND_INDEX = os.environ.get("WORK_BY_KIND_INDEX", "kind-updated-index")
+
 # The audit table is keyed on entity_id (partition) + timestamp (sort).
 #
 # Deliberately not the marketing tool's shape. Its config.py records the mistake:
