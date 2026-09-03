@@ -46,6 +46,7 @@ import { describeError, getRoadmap, getRoles, getSkills, getWorkload } from '../
 import { palette, radius } from '../styles/theme';
 import { assignmentsByPerson, noAssignments } from '../utils/assignments';
 import { buildGrid, todayISO } from '../utils/dates';
+import { splitObservers } from '../utils/observers';
 import {
   Chip,
   ErrorText,
@@ -95,6 +96,15 @@ const Roster = styled.ul`
   display: flex;
   flex-direction: column;
   gap: 10px;
+`;
+
+/**
+ * The same list, with room for the line of explanation that sits above it. The rows
+ * themselves are deliberately identical to the roster's - an observer is not a lesser
+ * kind of person, just one who is not currently holding anything.
+ */
+const ObserverRoster = styled(Roster)`
+  margin-top: 10px;
 `;
 
 const Row = styled.li<{ $inactive: boolean }>`
@@ -491,6 +501,16 @@ export default function TeamPage() {
   const visible = sorted;
 
   /**
+   * The roster, minus the people who are only watching.
+   *
+   * See utils/observers.ts for the rule and for why it is two conditions. The short
+   * version: sole-role "Outside engineering" AND holding nothing. Anyone carrying a
+   * lane stays in the list above whatever their role says, so this can never hide
+   * accountability - it only shortens the list of people you might staff something to.
+   */
+  const { roster: rosterPeople, observers } = useMemo(() => splitObservers(visible), [visible]);
+
+  /**
    * The chart's rows: the same people the roster is showing, minus the ones holding
    * nothing.
    *
@@ -537,6 +557,125 @@ export default function TeamPage() {
   /** Project ids rendered as names, with the unresolvable id shown rather than hidden. */
   const projectList = (ids: string[]) =>
     ids.map((id) => projectNames.get(id) ?? id).sort((a, b) => a.localeCompare(b));
+
+  /**
+   * One roster row. Extracted so the roster and the observers list below are the
+   * SAME row rather than two that look alike - an observer is an ordinary person
+   * who happens to hold nothing, and their row must stay editable, deletable and
+   * expandable exactly like everybody else's. Two copies of this JSX would drift.
+   */
+  const renderPerson = (person: PersonWorkload) => {
+    const dri = projectList(person.dri_project_ids);
+    const support = projectList(person.support_project_ids);
+    const open = editing === person.email;
+    const mine = isMe(person);
+    const canEdit = isAdmin || mine;
+    return (
+      <Row key={person.email} $inactive={!person.active}>
+        <Head>
+          <Who>
+            <Name>
+              {person.name}
+              {person.active ? '' : ' (deactivated)'}
+            </Name>
+            <Email>{person.email}</Email>
+            {person.roles.length > 0 ? (
+              <RoleLine>
+                {/* Falls back to the raw value, so a role dropped from the
+                    vocabulary still shows rather than blanking the line. */}
+                {person.roles.map((r) => roleLabels.get(r) ?? r).join(' · ')}
+              </RoleLine>
+            ) : (
+              <NoRoles>{mine ? 'No role set — add yours' : 'No role set'}</NoRoles>
+            )}
+          </Who>
+
+          <Cell>
+            {person.specialisations.length === 0 ? (
+              <Nothing>No specialisations recorded</Nothing>
+            ) : (
+              [...person.specialisations]
+                // Strongest first: the reason to scan this column is to find
+                // who to ask, not to read an alphabetical list. Zero-star
+                // learners fall to the bottom - they are in the list on
+                // purpose, but they answer a different question than the top
+                // of it. The comparator lives in utils/skills.ts because the
+                // ordering is a claim about the scale, not about this table.
+                .sort(compareSpecialisations)
+                .map((s) => (
+                  <SkillChip
+                    key={s.skill}
+                    $stars={s.stars}
+                    $learning={s.wants_to_learn}
+                    title={skillTitle(s.stars, s.wants_to_learn)}
+                  >
+                    <ChipStars aria-hidden="true">{starGlyphs(s.stars)}</ChipStars>
+                    {labels.get(s.skill) ?? s.skill}
+                  </SkillChip>
+                ))
+            )}
+          </Cell>
+
+          {/* Somebody holding nothing gets an empty cell. There was a
+              "Carrying nothing" marker here and it was removed; the absence
+              of chips now says the same thing more quietly. */}
+          <Cell>
+            {dri.length ? (
+              <Chip title={`DRI: ${dri.join(', ')}`}>DRI ×{dri.length}</Chip>
+            ) : null}
+            {support.length ? (
+              <Chip title={`Support: ${support.join(', ')}`}>
+                Support ×{support.length}
+              </Chip>
+            ) : null}
+            {person.owned_phase_count ? (
+              <Chip title="Includes ongoing Maintenance bands">
+                {person.owned_phase_count}{' '}
+                {person.owned_phase_count === 1 ? 'phase' : 'phases'}
+              </Chip>
+            ) : null}
+          </Cell>
+
+          <Cell>
+            {canEdit ? (
+              <SecondaryButton
+                type="button"
+                onClick={() => {
+                  setEditing(open ? null : person.email);
+                  setAdding(false);
+                }}
+                aria-expanded={open}
+              >
+                {open ? 'Close' : mine && !isAdmin ? 'Edit yours' : 'Edit'}
+              </SecondaryButton>
+            ) : null}
+          </Cell>
+        </Head>
+
+        {open && canEdit ? (
+          <EditorPanel>
+            <PersonEditor
+              person={person}
+              skills={skills}
+              roles={roles}
+              assignments={{
+                dri,
+                support,
+                phaseCount: person.owned_phase_count,
+              }}
+              admin={isAdmin}
+              onSaved={onSaved}
+              /* Delete is admin-only, and it is admin-only even on your own
+                 record: it blanks assignments across lanes nobody is looking
+                 at. Withholding the callback is what removes the button. */
+              onDeleted={isAdmin ? onDeleted : undefined}
+              onCancel={() => setEditing(null)}
+            />
+          </EditorPanel>
+        ) : null}
+      </Row>
+    );
+  };
 
   return (
     <>
@@ -632,11 +771,22 @@ export default function TeamPage() {
                 </Hint>
                 {/* Stated rather than left to be inferred from an absence: a person
                     missing because they hold nothing and a person missing because of a
-                    filter look identical once they are gone. */}
+                    filter look identical once they are gone.
+
+                    The tail names Observers when that section exists, because otherwise
+                    "listed below" sends the reader to the roster, where they will find
+                    only some of the people this line just promised them. Everybody in
+                    the observers list holds nothing, so they are all part of this
+                    count. */}
                 {chartOmitted > 0 ? (
                   <Hint>
                     {chartOmitted} {chartOmitted === 1 ? 'person is' : 'people are'} not
-                    shown here: they hold nothing. They are listed below.
+                    shown here: they hold nothing. They are listed below
+                    {observers.length === 0
+                      ? '.'
+                      : observers.length === chartOmitted
+                        ? ', under Observers.'
+                        : ', some of them under Observers.'}
                   </Hint>
                 ) : null}
               </ChartNotes>
@@ -672,123 +822,34 @@ export default function TeamPage() {
           <Status>Loading the team…</Status>
         ) : visible.length === 0 ? (
           <Status>Nobody on the roster yet.</Status>
+        ) : rosterPeople.length === 0 ? (
+          /* Everybody matched the observer rule. Said out loud, because an empty panel
+             above a full one reads as a bug rather than as an answer. */
+          <Status>Nobody on the roster holds anything yet — everyone is listed below.</Status>
         ) : (
           <Roster>
-            {visible.map((person) => {
-              const dri = projectList(person.dri_project_ids);
-              const support = projectList(person.support_project_ids);
-              const open = editing === person.email;
-              const mine = isMe(person);
-              const canEdit = isAdmin || mine;
-              return (
-                <Row key={person.email} $inactive={!person.active}>
-                  <Head>
-                    <Who>
-                      <Name>
-                        {person.name}
-                        {person.active ? '' : ' (deactivated)'}
-                      </Name>
-                      <Email>{person.email}</Email>
-                      {person.roles.length > 0 ? (
-                        <RoleLine>
-                          {/* Falls back to the raw value, so a role dropped from the
-                              vocabulary still shows rather than blanking the line. */}
-                          {person.roles.map((r) => roleLabels.get(r) ?? r).join(' · ')}
-                        </RoleLine>
-                      ) : (
-                        <NoRoles>{mine ? 'No role set — add yours' : 'No role set'}</NoRoles>
-                      )}
-                    </Who>
-
-                    <Cell>
-                      {person.specialisations.length === 0 ? (
-                        <Nothing>No specialisations recorded</Nothing>
-                      ) : (
-                        [...person.specialisations]
-                          // Strongest first: the reason to scan this column is to find
-                          // who to ask, not to read an alphabetical list. Zero-star
-                          // learners fall to the bottom - they are in the list on
-                          // purpose, but they answer a different question than the top
-                          // of it. The comparator lives in utils/skills.ts because the
-                          // ordering is a claim about the scale, not about this table.
-                          .sort(compareSpecialisations)
-                          .map((s) => (
-                            <SkillChip
-                              key={s.skill}
-                              $stars={s.stars}
-                              $learning={s.wants_to_learn}
-                              title={skillTitle(s.stars, s.wants_to_learn)}
-                            >
-                              <ChipStars aria-hidden="true">{starGlyphs(s.stars)}</ChipStars>
-                              {labels.get(s.skill) ?? s.skill}
-                            </SkillChip>
-                          ))
-                      )}
-                    </Cell>
-
-                    {/* Somebody holding nothing gets an empty cell. There was a
-                        "Carrying nothing" marker here and it was removed; the absence
-                        of chips now says the same thing more quietly. */}
-                    <Cell>
-                      {dri.length ? (
-                        <Chip title={`DRI: ${dri.join(', ')}`}>DRI ×{dri.length}</Chip>
-                      ) : null}
-                      {support.length ? (
-                        <Chip title={`Support: ${support.join(', ')}`}>
-                          Support ×{support.length}
-                        </Chip>
-                      ) : null}
-                      {person.owned_phase_count ? (
-                        <Chip title="Includes ongoing Maintenance bands">
-                          {person.owned_phase_count}{' '}
-                          {person.owned_phase_count === 1 ? 'phase' : 'phases'}
-                        </Chip>
-                      ) : null}
-                    </Cell>
-
-                    <Cell>
-                      {canEdit ? (
-                        <SecondaryButton
-                          type="button"
-                          onClick={() => {
-                            setEditing(open ? null : person.email);
-                            setAdding(false);
-                          }}
-                          aria-expanded={open}
-                        >
-                          {open ? 'Close' : mine && !isAdmin ? 'Edit yours' : 'Edit'}
-                        </SecondaryButton>
-                      ) : null}
-                    </Cell>
-                  </Head>
-
-                  {open && canEdit ? (
-                    <EditorPanel>
-                      <PersonEditor
-                        person={person}
-                        skills={skills}
-                        roles={roles}
-                        assignments={{
-                          dri,
-                          support,
-                          phaseCount: person.owned_phase_count,
-                        }}
-                        admin={isAdmin}
-                        onSaved={onSaved}
-                        /* Delete is admin-only, and it is admin-only even on your own
-                           record: it blanks assignments across lanes nobody is looking
-                           at. Withholding the callback is what removes the button. */
-                        onDeleted={isAdmin ? onDeleted : undefined}
-                        onCancel={() => setEditing(null)}
-                      />
-                    </EditorPanel>
-                  ) : null}
-                </Row>
-              );
-            })}
+            {rosterPeople.map(renderPerson)}
           </Roster>
         )}
       </Panel>
+
+      {/* Observers: on the roster, but never the answer to "who could pick this up".
+          Rendered with the SAME renderPerson as the list above, so these rows stay
+          editable and expandable - this is a change of place, not of standing. The
+          section is absent rather than empty when nobody qualifies, which is the
+          everyday case and should cost nothing on the page. */}
+      {observers.length > 0 ? (
+        <Panel>
+          <PanelTitle>Observers</PanelTitle>
+          <Hint>
+            Outside engineering, and not holding anything right now. They are on the
+            roster and can be edited here; they are separated out so the list above
+            stays a list of people you could staff work to. Anyone from outside
+            engineering who does take on a lane moves back up on their own.
+          </Hint>
+          <ObserverRoster>{observers.map(renderPerson)}</ObserverRoster>
+        </Panel>
+      ) : null}
     </>
   );
 }

@@ -611,8 +611,8 @@ planning_roadmap/
 │   │                              state colours, themeVars), ui.ts
 │   ├── utils/                   ← dates.ts (UTC-anchored), phaseState.ts,
 │   │                              segments.ts, milestones.ts, assignments.ts
-│   │                              (the person-centric transpose) — all pure,
-│   │                              all tested
+│   │                              (the person-centric transpose), observers.ts
+│   │                              (roster vs. watching) — all pure, all tested
 │   └── types.ts                 ← ProjectSummary vs Project — see below
 ├── cdk/                         ← (slice 5) CDK stacks
 └── CLAUDE.md
@@ -902,6 +902,54 @@ That comparison is order-insensitive because it has to be: RHF yields checkbox v
 in catalogue order while the API returns them in stored order, so comparing as
 sequences would treat every open-and-save as a change and write an audit entry
 claiming somebody edited their role when they only looked at it.
+
+### Observers — the roster, minus the people only watching
+
+`src/utils/observers.ts` (+ 14 tests) splits the Team page roster in two. The lower
+section is titled **Observers**, and the rule is **two conditions, both required**:
+sole role `outside-engineering` **AND** holding nothing.
+
+The roster answers *"who could pick this up"*. Somebody from operations or compliance
+has a login and a row but is never that answer, so listing them among the engineers
+makes the list longer without making it more useful.
+
+**Why sole-role and not just "has the role".** The picker is additive — "pick as many
+as apply" — so a person who ticked Outside engineering *and* BA is a BA. Treating one
+tick as decisive would let a second, **more specific** answer silently demote somebody.
+The narrower claim wins because it is the one carrying information.
+
+**Why holds-nothing.** This is the safety condition and the important one. If somebody
+outside engineering really is DRI of a lane, hiding them below the fold would make that
+lane look **unowned** — the chart silent about accountability that genuinely exists. A
+role describes a person; it is **never allowed to conceal work**. Work always wins.
+Pinned by `it('THE SAFETY RULE: work beats the role, every time')`.
+
+That second condition is also why this **cannot remove a single bar from the chart**:
+the chart independently drops everybody holding nothing, so every observer was already
+absent from it. Only the list their name appears in changes.
+
+**`roles: []` is not an observer.** Empty is the workbook-seeded "nobody recorded
+this", and reclassifying those people would turn missing data into a claim about them.
+The test is on `roles.length === 1`, not on `includes`.
+
+**Holds-nothing reads the person's own `PersonWorkload` counts** — the same three
+numbers the row draws its DRI / Support / phases chips from — *not* the chart's
+separate assignments map. The row and its placement must agree; a person shown with no
+chips who was nonetheless kept out of Observers would be inexplicable. `owned_phase_count`
+means Maintenance bands count: whoever keeps a thing alive is not an observer.
+
+Both sections render through **one shared `renderPerson`** in `TeamPage.tsx`, extracted
+for this. An observer is an ordinary person who happens to hold nothing, so their row
+stays editable, deletable and expandable — this is a change of place, not of standing.
+Two copies of that 110-line JSX would drift.
+
+`splitObservers` **preserves incoming order** in both halves rather than re-sorting,
+because the caller has already sorted and the two lists would otherwise disagree about
+what "first" means. The section is **absent, not empty**, when nobody qualifies.
+
+The chart's omitted-count line names Observers when that section exists — "…listed
+below, some of them under Observers" — because otherwise "listed below" sends the
+reader to the roster to find only some of the people it just promised.
 
 ### The manager field is gone
 
