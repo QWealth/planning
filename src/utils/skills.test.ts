@@ -58,10 +58,15 @@ describe('clampStars', () => {
 });
 
 describe('starLabel', () => {
-  it('gives each rung its own words', () => {
-    const labels = [0, 1, 2, 3].map(starLabel);
-    expect(new Set(labels).size).toBe(4);
-    expect(labels.every((l) => l.length > 0)).toBe(true);
+  it('counts the stars rather than characterising the person', () => {
+    // The rungs used to be captioned - "the obvious person to ask" and so on. They are
+    // not any more, and this is the test that notices if a caption comes back.
+    expect([0, 1, 2, 3].map(starLabel)).toEqual([
+      'Not rated',
+      '1 of 3 stars',
+      '2 of 3 stars',
+      '3 of 3 stars',
+    ]);
   });
 
   it('falls back rather than returning undefined for a value off the scale', () => {

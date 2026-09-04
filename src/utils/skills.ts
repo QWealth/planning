@@ -1,11 +1,9 @@
 /**
- * The star scale, and what each rung means.
+ * The star scale.
  *
  * Here rather than in PersonEditor because the Team page reads the same numbers back
- * out and has to put the same words on them. Two copies of "what does two stars mean"
- * is exactly the drift this app keeps its vocabularies server-side to avoid, and the
- * failure is silent: the form would say one thing and the roster another, and nobody
- * would notice until somebody was staffed off the wrong reading.
+ * out and has to render them the same way. Two copies of "how do we write a rating"
+ * is exactly the drift this app keeps its vocabularies server-side to avoid.
  *
  * It is NOT served by the API, unlike the skill list itself. The skill vocabulary is
  * data - it grows, it gets renamed, and a stale copy silently stops matching stored
@@ -13,6 +11,11 @@
  * fetching them would cost a round trip to be told what MAX_STARS already says. If
  * this ever gains a fourth rung, that is a schema change in fast/app/skills.py and a
  * deploy of both halves, which is the moment to reconsider.
+ *
+ * THE RUNGS ARE NOT CAPTIONED. They used to be: one star read "can help out, with
+ * somebody alongside" and so on up. The sentences said less than the stars did and
+ * put words in the mouth of whoever ticked the box, so a rating now says how many
+ * stars it is and leaves the reading to the reader.
  */
 
 import type { Specialisation } from '../types';
@@ -24,19 +27,17 @@ export const MAX_STARS = 3;
 export const STAR_VALUES: readonly number[] = [1, 2, 3];
 
 /**
- * What each rung claims, in the first person, because the person filling the form in
- * is almost always describing themselves. Read aloud as "one star: I can help out".
+ * A rating in words: a count, not a claim.
+ *
+ * Exists for the places a glyph cannot go - tooltips, and the labels screen readers
+ * announce - where "★★☆" would be read out as punctuation or as nothing at all.
  */
-export const STAR_LABELS: Readonly<Record<number, string>> = {
-  0: 'Not one of their areas',
-  1: 'Can help out, with somebody alongside',
-  2: 'Can do it, but it will take longer',
-  3: 'The obvious person to ask',
-};
-
-/** The words for a rating, falling back rather than returning undefined. */
 export function starLabel(stars: number): string {
-  return STAR_LABELS[clampStars(stars)] ?? STAR_LABELS[0];
+  const n = clampStars(stars);
+  if (n === 0) {
+    return 'Not rated';
+  }
+  return `${n} of ${MAX_STARS} stars`;
 }
 
 /** Hand-edited data and future scales both land in range. See PersonModel._stars. */

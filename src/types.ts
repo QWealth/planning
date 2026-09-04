@@ -116,7 +116,7 @@ export interface Project extends ProjectSummary {
  *
  * TWO FIELDS, NOT ONE, AND THEY DO NOT IMPLY EACH OTHER.
  *
- *   stars           0-3, what they can do TODAY. 3 is the obvious person to ask.
+ *   stars           0-3, what they can do TODAY.
  *   wants_to_learn  whether they want to be given this work.
  *
  * A three-star engineer may still want more of it, and a zero-star one who ticks the
@@ -205,8 +205,62 @@ export interface Person {
   roles: string[];
   active: boolean;
   specialisations: Specialisation[];
+  /**
+   * The Monday digest, and whether this person asked for it.
+   *
+   * Not optional even though every roster row predates the fields: the API defaults
+   * them on the way out (fast/app/db/models.py), so `| undefined` here would only
+   * spread a check for a state the server does not return.
+   *
+   * `digest_admin_report` is the odd one out. It subscribes an address to the
+   * milestones NOBODY owns, across every project, so only an admin may set it - which
+   * is why it is read here rather than assumed: the settings page shows that switch to
+   * the people who have it instead of to everybody who would be refused.
+   */
+  digest_enabled: boolean;
+  digest_days: number;
+  digest_admin_report: boolean;
   created_at: string | null;
   updated_at: string | null;
+}
+
+/**
+ * The offered lookahead windows, from `fast/app/digest.py:DIGEST_WINDOWS`.
+ *
+ * One of the few vocabularies in this app that is NOT fetched. It is three integers
+ * that the server validates anyway, and a request to learn them would be a round trip
+ * before a settings page could draw its own radio buttons. If they diverge the server
+ * refuses with 422 and names the real set, which is the failure this is allowed to
+ * have - unlike the skills and roles lists, where a stale copy renders silently wrong
+ * data against real people.
+ */
+export const DIGEST_WINDOWS = [7, 14, 30] as const;
+
+/**
+ * `GET /api/digest/preview` - the caller's own Monday message, composed but not sent.
+ *
+ * The caller's ONLY. A dry run of the whole job would put one colleague's reminders in
+ * another's browser, so the endpoint composes per-caller; see fast/app/routes/digest.py.
+ */
+export interface DigestPreview {
+  /** The Monday this would be sent for, as an ISO date. */
+  week: string;
+  enabled: boolean;
+  days: number;
+  /**
+   * Empty when there is nothing to say, and that is a real answer rather than a
+   * missing one: a digest with nothing in it is not sent at all. The page renders it
+   * as "you would get nothing this week", never as an error.
+   */
+  digest: string;
+  /** Empty unless this person is subscribed to the unowned-milestone report. */
+  unowned_report: string;
+  /**
+   * Whether this deployment delivers at all - the CDK master switch, separate from
+   * the personal one. Without it the page would confirm a subscription that the
+   * environment is quietly discarding.
+   */
+  sending_enabled: boolean;
 }
 
 /**
@@ -501,6 +555,11 @@ export interface PersonPatch {
   roles?: PersonRole[];
   active?: boolean;
   specialisations?: Specialisation[];
+  digest_enabled?: boolean;
+  /** One of DIGEST_WINDOWS. Anything else is a 422 naming the real set. */
+  digest_days?: number;
+  /** Admin-only on the server. Sending it as a member is a 403, not a silent no-op. */
+  digest_admin_report?: boolean;
 }
 
 /**

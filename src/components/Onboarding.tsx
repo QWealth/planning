@@ -40,11 +40,6 @@
  * the way in, so a row created here carries exactly the specialisations it was actually
  * given. Only a name and a role are enforced, as before.
  *
- * The scale is not spelled out above the rows - `starScale={false}` - because a
- * four-line key is the wrong thing to make somebody read before their first click. Each
- * star still names itself on hover and to a screen reader, so the words are where they
- * are needed rather than gone.
- *
  * The cost is one more round trip before the form can draw: GET /skills, requested
  * alongside GET /roles rather than after it, so it is one wait and not two.
  */
@@ -169,8 +164,6 @@ export default function Onboarding({ email, onDone, signOut }: OnboardingProps) 
           skills={skills}
           roles={roles}
           admin={false}
-          // The rows, without the scale printed above them. See the header.
-          starScale={false}
           lockedEmail={email}
           onSaved={onDone}
         />

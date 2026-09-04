@@ -251,3 +251,49 @@ def test_editing_the_roadmap_is_not_admin_only(monkeypatch, aws):
     client = _client(monkeypatch, aws, _member())
     made = client.post("/api/projects", json={"name": "Tax", "lane_order": 10})
     assert made.status_code == 201, made.text
+
+
+# --------------------------------------------------------------- digest settings
+def test_a_member_can_switch_their_own_digest_on_and_it_persists(monkeypatch, aws):
+    """
+    The whole round trip, because the pieces agreeing separately is not the same as
+    them agreeing. The schema accepted these fields and the model read them back long
+    before `PERSON_UPDATABLE` in db/queries/people.py had heard of them, so a save
+    that looked fine in the browser raised on the way to the table.
+    """
+    client = _client(monkeypatch, aws, _member())
+    created = client.post("/api/people", json=_new(ME, "Thomas"))
+    assert created.json()["digest_enabled"] is False
+
+    saved = client.patch(f"/api/people/{ME}", json={"digest_enabled": True, "digest_days": 30})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["digest_enabled"] is True
+    assert saved.json()["digest_days"] == 30
+
+    reread = client.get(f"/api/people/{ME}").json()
+    assert (reread["digest_enabled"], reread["digest_days"]) == (True, 30)
+
+
+def test_a_window_nobody_is_offered_is_refused_at_the_edge(monkeypatch, aws):
+    client = _client(monkeypatch, aws, _member())
+    client.post("/api/people", json=_new(ME, "Thomas"))
+    refused = client.patch(f"/api/people/{ME}", json={"digest_days": 11})
+    assert refused.status_code == 422
+
+
+def test_only_an_admin_can_subscribe_to_the_unowned_report(monkeypatch, aws):
+    """
+    Different from the two settings beside it. Turning the personal digest on affects
+    only yourself; the unowned-milestone report is a view of work across every project
+    on the roadmap, so it is a grant rather than a preference.
+    """
+    admin = _client(monkeypatch, aws, _admin())
+    admin.post("/api/people", json=_new(ME, "Thomas"))
+
+    member = _client(monkeypatch, aws, _member())
+    assert member.patch(f"/api/people/{ME}", json={"digest_admin_report": True}).status_code == 403
+
+    # Re-made rather than reused: _client patches the claims globally, so the identity
+    # is whichever one was built last, not which object the call is made on.
+    admin = _client(monkeypatch, aws, _admin())
+    assert admin.patch(f"/api/people/{ME}", json={"digest_admin_report": True}).status_code == 200

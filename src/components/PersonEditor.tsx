@@ -42,14 +42,14 @@
  * admin for anyone else", and a greyed-out Deactivate says that where a red error
  * message after the fact does not.
  *
- * `starScale` is a different kind of flag: not a permission, a length. The picker is on
- * every form that uses this component, the onboarding gate included - what somebody can
- * be staffed onto is most of the reason their roster row is worth having, and a gate
- * that skips the question has to ask it again later from a page nobody opens twice. What
- * the gate turns off is the four-line scale legend above the rows, because a key to a
- * control is the wrong thing to make somebody read before their first click. Nothing
- * depends on having read it: every star carries its own words in a `title` and in
- * screen-reader text, so the scale is on the row that needs it either way.
+ * The specialisations picker is on every form that uses this component, the onboarding
+ * gate included - what somebody can be staffed onto is most of the reason their roster
+ * row is worth having, and a gate that skips the question has to ask it again later
+ * from a page nobody opens twice.
+ *
+ * The stars are not captioned. Each one carries its own words in a `title` and in
+ * screen-reader text, which is where somebody looks when they want them; a key printed
+ * above the rows is read once, by the person who needed it least.
  */
 
 import { useState } from 'react';
@@ -65,13 +65,7 @@ import {
 } from '../services/api';
 import { palette, radius } from '../styles/theme';
 import { sameRoles } from '../utils/roles';
-import {
-  MAX_STARS,
-  STAR_LABELS,
-  STAR_VALUES,
-  sameSpecialisations,
-  starLabel,
-} from '../utils/skills';
+import { STAR_VALUES, sameSpecialisations, starLabel } from '../utils/skills';
 import {
   DangerButton,
   ErrorText,
@@ -242,40 +236,6 @@ const SkillsLegend = styled.legend`
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: ${palette.inkSoft};
-`;
-
-/*
-  THE LEGEND, AND WHY IT IS AT THE TOP RATHER THAN ON EACH ROW.
-
-  Stars carry no meaning by themselves - three of them could as easily be a five-point
-  scale with two missing. The words have to be on screen somewhere, and they used to be
-  on every row, because every option was spelled out in full: "Yes", "Yes, but slowly",
-  "No, but wants to learn". Eleven skills times four labels is forty-four words of
-  chrome to read one form.
-
-  So the words are stated once, here, and the rows are stars. Each star still carries
-  its own label in a title and for screen readers, so nothing depends on having read
-  this - it is the thing you glance at once, not a key you have to keep returning to.
-*/
-const Legend = styled.div`
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  margin-bottom: 10px;
-  font-size: 11px;
-  color: ${palette.inkSoft};
-`;
-
-const LegendItem = styled.span`
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  white-space: nowrap;
-`;
-
-const LegendStars = styled.span`
-  color: ${palette.hotPink};
-  letter-spacing: 1px;
 `;
 
 /*
@@ -496,15 +456,6 @@ interface PersonEditorProps {
    */
   admin: boolean;
   /**
-   * Whether to print the star scale above the specialisation rows. Default true.
-   *
-   * False on the onboarding gate, which asks the same question with the same control
-   * and simply does not spell the scale out first. It is not a way to drop the picker -
-   * there is no way to drop the picker, and the empty-vocabulary case below is a
-   * different thing again - only a way to stop explaining it.
-   */
-  starScale?: boolean;
-  /**
    * On a create, the only address this caller is allowed to use.
    *
    * A non-admin may add exactly themselves, so there is nothing to type: the field is
@@ -530,7 +481,6 @@ export default function PersonEditor({
   roles,
   assignments,
   admin,
-  starScale = true,
   lockedEmail = null,
   onSaved,
   onDeleted,
@@ -785,26 +735,10 @@ export default function PersonEditor({
         question; the only case with nothing to ask is a caller holding an empty skill
         list, and a fieldset headed "Specialisations" with no rows under it reads as a
         render that failed rather than as a question with no options.
-
-        The scale legend inside is the part the onboarding gate drops - see starScale.
       */}
       {skills.length > 0 ? (
         <Skills>
           <SkillsLegend>Specialisations</SkillsLegend>
-          {/* Stated once, at the top, instead of on all eleven rows. See Legend above. */}
-          {starScale ? (
-            <Legend aria-hidden="true">
-              {STAR_VALUES.map((value) => (
-                <LegendItem key={value}>
-                  <LegendStars>
-                    {'★'.repeat(value)}
-                    {'☆'.repeat(MAX_STARS - value)}
-                  </LegendStars>
-                  {STAR_LABELS[value]}
-                </LegendItem>
-              ))}
-            </Legend>
-          ) : null}
           <SkillGrid>
             {skills.map((skill) => {
               const rating = Number(stars?.[skill.skill] ?? 0) || 0;
@@ -838,7 +772,7 @@ export default function PersonEditor({
                       >
                         <span aria-hidden="true">{value <= rating ? '★' : '☆'}</span>
                         <VisuallyHidden as="span">
-                          {skill.label} — {value} of {MAX_STARS}, {starLabel(value)}
+                          {skill.label} — {starLabel(value)}
                         </VisuallyHidden>
                         <VisuallyHidden
                           as="input"

@@ -87,6 +87,14 @@ class PlanningRoadmapStack(cdk.Stack):
         # work, which is what the app did before Slack.
         slack_secret_name = self.node.try_get_context("slack_secret_name") or ""
 
+        # Whether this deployment's Monday digest actually DMs anybody. Off unless
+        # cdk.json says otherwise, and separate from the per-person opt-in on the
+        # settings page: that one is "do I want this", this one is "may this stack
+        # message real colleagues at all". The schedule and the function deploy either
+        # way, so the job can be watched doing nothing before it is allowed to do
+        # something. See fast/app/notifications.py.
+        digest_enabled = bool(self.node.try_get_context("digest_enabled"))
+
         if require_auth and not enforce_group and not allow_whole_pool:
             # Not a hypothetical footgun: this combination is a shared pool with the
             # door open. The authorizer would accept any token the compliance pool
@@ -137,6 +145,7 @@ class PlanningRoadmapStack(cdk.Stack):
             app_url=app_url,
             service_caller_arns=service_caller_arns,
             slack_secret_name=slack_secret_name,
+            digest_enabled=digest_enabled,
             env=child_env,
         )
 

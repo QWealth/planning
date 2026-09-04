@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from mangum import Mangum
 
 from app import config
-from app.routes import identity, people, projects, roadmap, service, slack, work
+from app.routes import digest, identity, people, projects, roadmap, service, slack, work
 
 # Configure logging.
 #
@@ -47,6 +47,11 @@ app.include_router(people.skills_router)
 app.include_router(people.roles_router)
 app.include_router(projects.router)
 app.include_router(roadmap.router)
+
+# The Monday digest, read-only: it shows a person their own message and sends nothing.
+# The job that actually sends is app/notifications.py, invoked by EventBridge rather
+# than through here.
+app.include_router(digest.router)
 
 # RFCs and tasks. Two routers over one table - see routes/work.py for why the two
 # kinds do not share a prefix even though they share every access pattern.

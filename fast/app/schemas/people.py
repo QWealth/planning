@@ -11,6 +11,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.digest import DIGEST_WINDOWS
 from app.roles import Role
 from app.skills import MAX_STARS, MIN_STARS, Skill
 
@@ -69,9 +70,9 @@ class SpecialisationIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     skill: Skill
-    # Defaults to two, not three. Omitting the rating must not silently make somebody
-    # the obvious person to ask - that is a claim about them they did not make, and it
-    # is the one that gets acted on when work is being handed out.
+    # Defaults to two, not three. Omitting the rating must not silently top somebody out
+    # - that is a claim about them they did not make, and it is the one that gets acted
+    # on when work is being handed out.
     stars: int = Field(default=2, ge=MIN_STARS, le=MAX_STARS)
     wants_to_learn: bool = False
 
@@ -257,6 +258,34 @@ class PersonUpdate(BaseModel):
     active: Optional[bool] = None
     specialisations: Optional[list[SpecialisationIn]] = None
 
+    # The Monday digest. Settable here and NOT on PersonCreate, deliberately: creating
+    # a person happens at the onboarding gate, which already blocks somebody from using
+    # the app, and a question about notification preferences is not worth a field on
+    # the one form nobody can skip. It defaults to off, so the honest default needs no
+    # answer.
+    digest_enabled: Optional[bool] = None
+    digest_days: Optional[int] = None
+    # Admin-only at the route, like `active`. It nominates who receives the report of
+    # milestones with no DRI, which is a decision about the team rather than about
+    # yourself - and a self-service switch onto a report about everyone's unowned work
+    # is a subscription to other people's business.
+    digest_admin_report: Optional[bool] = None
+
+    @field_validator("digest_days")
+    @classmethod
+    def check_window(cls, value: Optional[int]) -> Optional[int]:
+        """
+        One of the offered windows, or a 422 naming them.
+
+        Rejected at the edge rather than clamped, unlike the read path: a caller
+        sending 11 has a bug or a stale UI, and silently storing 14 instead would make
+        the settings page disagree with what was saved.
+        """
+        if value is None or value in DIGEST_WINDOWS:
+            return value
+        offered = ", ".join(str(w) for w in DIGEST_WINDOWS)
+        raise ValueError(f"Pick one of {offered} days.")
+
     @field_validator("roles")
     @classmethod
     def check_roles(cls, value: Optional[list[Role]]) -> Optional[list[Role]]:
@@ -313,6 +342,11 @@ class PersonOut(BaseModel):
     roles: list[str] = Field(default_factory=list)
     active: bool = True
     specialisations: list[SpecialisationOut] = Field(default_factory=list)
+    # Defaulted here as well as in from_item, because this model is also built from
+    # dicts that never went through it - the workload endpoint composes its own.
+    digest_enabled: bool = False
+    digest_days: int = 14
+    digest_admin_report: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 

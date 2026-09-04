@@ -14,7 +14,17 @@ logger = logging.getLogger(__name__)
 
 dynamodb = boto3.resource("dynamodb", region_name=config.AWS_REGION)
 
-PERSON_UPDATABLE = {"name", "roles", "active", "specialisations"}
+# An allow-list rather than a denylist: email is the key and updated_at is ours, and
+# both would be silently accepted by the expression builder below if this were open.
+PERSON_UPDATABLE = {
+    "name",
+    "roles",
+    "active",
+    "specialisations",
+    "digest_enabled",
+    "digest_days",
+    "digest_admin_report",
+}
 
 
 def get_people_table():

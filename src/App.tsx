@@ -59,6 +59,7 @@ const RfcsPage = lazy(() => import('./pages/RfcsPage'));
 const RfcPage = lazy(() => import('./pages/RfcPage'));
 const TasksPage = lazy(() => import('./pages/TasksPage'));
 const TaskPage = lazy(() => import('./pages/TaskPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 
 export default function App() {
   return (
@@ -83,6 +84,11 @@ export default function App() {
                     somebody can be sent. The `new` sentinel cannot collide with a
                     real id because ids carry a `tsk_` prefix. */}
                 <Route path="tasks/:itemId" element={<TaskPage />} />
+                {/* One person's own preferences, so there is no id in the path - the
+                    page reads the signed-in address from the identity the shell already
+                    fetched. /settings/{email} would imply somebody else's are editable
+                    here, and they are not. */}
+                <Route path="settings" element={<SettingsPage />} />
                 {/* Anything else goes to the roadmap rather than to a 404 page. The
                     only ways to reach an unknown path are a typo and a stale link,
                     and both are better served by the board than by an apology. */}

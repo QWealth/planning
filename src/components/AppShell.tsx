@@ -187,6 +187,11 @@ export default function AppShell({ auth }: { auth: AuthState }) {
               order of the tabs is roughly widest scope to narrowest - the roadmap is
               the year, the board is the week. */}
           <Tab to="/tasks">Board</Tab>
+          {/* Last, and outside the widest-to-narrowest ordering above rather than the
+              end of it: the other four tabs are the work, this one is about you. It is
+              a tab and not a menu under the address on the right because a Monday DM
+              somebody did not ask for should be switchable off from somewhere obvious. */}
+          <Tab to="/settings">Settings</Tab>
         </Nav>
         <Spacer />
         {identity?.email ? <Status>{identity.email}</Status> : null}

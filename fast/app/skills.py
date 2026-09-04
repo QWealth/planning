@@ -27,10 +27,11 @@ engineer who also wants more of it, and somebody can be a zero-star one who want
 start - and the second person is exactly who a staffing search should surface when
 nobody else is free.
 
-    ***   The obvious person to ask.
-    **    Can do it, but it will take longer.
-    *     Can help out, with somebody alongside.
-    (0)   Cannot do it today. Only recorded at all if they want to learn.
+The rungs are uncaptioned, here and in the UI. They used to carry sentences - one star
+"can help out, with somebody alongside" up to three "the obvious person to ask" - and
+those were removed because they said less than the count did while putting words in the
+mouth of whoever filled the form in. Zero stars means only that: no rating, and the row
+is stored at all only if they want to learn.
 
 An entry with zero stars and no appetite says nothing, so it is refused by the schema
 rather than stored - the roster is a list of what people CAN do or WANT to do, and a

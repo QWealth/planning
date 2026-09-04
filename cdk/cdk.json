@@ -93,6 +93,24 @@
       "REINSTALLED to the workspace after any scope is added. Set this to \"\" to turn",
       "the picker off; inviting by typed address keeps working either way."
     ],
-    "slack_secret_name": "aardvark-app/slack"
+    "slack_secret_name": "aardvark-app/slack",
+
+    "_digest_comment": [
+      "The Monday milestone digest. OFF, and this is the master switch for whether",
+      "this deployment DMs anybody at all - a different question from the per-person",
+      "opt-in on the settings page, which is off by default too.",
+      "",
+      "Both exist because they fail differently. The per-person one is a preference;",
+      "this one is 'may this stack message real colleagues', and it is the thing",
+      "standing between a second deploy pointed at these tables and the whole roster",
+      "getting a real Slack message from a build nobody released.",
+      "",
+      "The function and the schedule deploy either way. With this off the job still",
+      "wakes on Monday and logs that it is disabled, which is how the wiring gets",
+      "confirmed before anything is sent. GET /api/digest/preview composes the real",
+      "text regardless, so nothing has to be turned on in order to be looked at.",
+      "Set to true once the team has agreed to be messaged."
+    ],
+    "digest_enabled": false
   }
 }

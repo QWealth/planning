@@ -402,9 +402,31 @@ class PersonModel:
             "roles": PersonModel._roles(item),
             "active": item.get("active", True),
             "specialisations": PersonModel._specialisations(item),
+            # The Monday digest settings, defaulted the same way and for the same
+            # reason. Absent means off: this feature sends a DM to a colleague, so a
+            # row that has never expressed a preference must not be taken as consent.
+            # The window is clamped in app/digest.py rather than here, because the
+            # rule about which windows exist belongs with the code that uses it.
+            "digest_enabled": bool(item.get("digest_enabled", False)),
+            "digest_days": PersonModel._digest_days(item),
+            "digest_admin_report": bool(item.get("digest_admin_report", False)),
             "created_at": item.get("created_at"),
             "updated_at": item.get("updated_at"),
         }
+
+    @staticmethod
+    def _digest_days(item: dict[str, Any]) -> int:
+        """
+        The lookahead window, as an int, for anything the table might hold.
+
+        DynamoDB returns numbers as Decimal, which the response model would reject as
+        a non-int, and a hand-edited string here must not 500 the roster for everybody
+        - the same rule as _stars above.
+        """
+        try:
+            return int(item.get("digest_days", 14))
+        except (TypeError, ValueError):
+            return 14
 
     @staticmethod
     def _roles(item: dict[str, Any]) -> list[str]:
@@ -661,6 +683,17 @@ class AuditLogModel:
     # other's rows and throw most of them away.
     ENTITY_RFC = "rfc"
     ENTITY_TASK = "task"
+    # Not a mutation, and the only entity here that nobody performed. It records that
+    # the Monday digest was sent to one person for one week, and it is what stops a
+    # retried schedule sending a second copy - see queries/audit.py:claim_once.
+    #
+    # It lives in this table rather than a new one because the shape already fits
+    # exactly: entity_id + timestamp is a natural composite key for "this recipient,
+    # that week", the conditional write is free, and the rows are a readable history of
+    # what the job actually did. It stays out of every existing query on its own: the
+    # /history route reads one entity_id (always a project or a person, never a
+    # digest#), and `recent` filters on this constant via the GSI partition.
+    ENTITY_NOTIFICATION = "notification"
 
     @staticmethod
     def create_entry(

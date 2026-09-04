@@ -69,6 +69,47 @@ def record(
         )
 
 
+def claim_once(entity_id: str, timestamp: str, detail: Optional[str] = None) -> bool:
+    """
+    Reserve one (recipient, week) slot. True if this call won it, False if it was taken.
+
+    The deduplication behind the Monday digest, and it is a conditional write rather
+    than a read-then-write because those are not the same thing. Two Lambdas started by
+    a retried EventBridge event both read "not sent yet" and both send; only one of them
+    can win an `attribute_not_exists` on the key. Getting a duplicate DM is a small
+    failure, but it is the kind that erodes trust in the whole feature, and the fix
+    costs one condition expression.
+
+    UNLIKE `record`, THIS DOES NOT SWALLOW ITS ERRORS - it returns False. A digest is
+    not worth sending if we cannot tell whether it was already sent, and the direction
+    to fail is "stay quiet": a missed week is recoverable by anybody looking at the
+    roadmap, where a duplicate is not recoverable at all once it is in someone's DMs.
+    """
+    entry = {
+        "entity_id": entity_id,
+        "timestamp": timestamp,
+        "action": "sent",
+        "entity": AuditLogModel.ENTITY_NOTIFICATION,
+        "before": None,
+        "after": detail,
+        "user_email": "system",
+    }
+    try:
+        get_audit_table().put_item(
+            Item=entry,
+            ConditionExpression="attribute_not_exists(entity_id) "
+            "AND attribute_not_exists(#ts)",
+            ExpressionAttributeNames={"#ts": "timestamp"},
+        )
+        return True
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            logger.info("Digest already claimed for %s at %s", entity_id, timestamp)
+        else:
+            logger.error("Could not claim %s at %s: %s", entity_id, timestamp, e)
+        return False
+
+
 def history(entity_id: str, limit: int = 100) -> list[dict[str, Any]]:
     """
     Every recorded change to one entity, newest first.

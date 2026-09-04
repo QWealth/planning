@@ -26,7 +26,7 @@ Replaces `~/projects/Planning Gantt Chart (Aug24).xlsx`. The workbook is being
   a person can be **hard-deleted** (blanking every assignment naming them), and the
   Team page carries a **schedule Gantt** — one row per person, phases they own drawn
   as bars and the projects they are DRI/Support on as pale bands behind. Since *that*:
-  the skill picker is a **three-star rating with a legend**, plus a separate "wants to
+  the skill picker is a **three-star rating**, plus a separate "wants to
   learn" tick (the two are independent axes; **Figma** joined the vocabulary beside
   ui-ux), the roster is **self-service** (edit yourself; admins edit anyone), and
   the `planning` group check is **off** so any pool account can get in. Since *that*:
@@ -50,7 +50,8 @@ Replaces `~/projects/Planning Gantt Chart (Aug24).xlsx`. The workbook is being
   Roadmap no longer opens all-collapsed, and the Board's project banners now carry the
   chart's own disclosure arrow. See "Collapsed by default, except the ones that are
   yours" below. Also **the onboarding gate asks for specialisations again** — the
-  picker is back, none of it is required, and the star legend stays off there. See
+  picker is back and none of it is required. The star legend is now off **everywhere**,
+  not just there, and the prop that used to toggle it is deleted. See
   "The onboarding gate". And **dark mode**, black and pink, taken from the operating
   system with no toggle and no icon. See "Dark mode".
 - **URL**: <https://planning.qconnect.qwnext.com> — CloudFront, valid TLS, now
@@ -312,12 +313,14 @@ up" — so read the two together rather than treating either as the last word:
   created here carries exactly what it was actually given. Only name and role are
   enforced, as before. **Proved in a browser:** a submit with no stars touched clears
   the gate and `/api/me` flips to `onboarded`.
-- **The star legend stays off**, which is the surviving half of "remove the description
-  of the stars". `starScale={false}`, and that flag is *only* about the four-line key
-  above the rows: each star still names itself in a `title` and in screen-reader text,
-  so the scale is on the row that needs it. The Team page still prints the block, which
-  is the differential the browser check asserts — legend absent on the gate, present on
-  Team, per-star labels on both.
+- **The star legend is gone everywhere, and so is its wording.** The key was off on the
+  gate and on elsewhere, behind a `starScale` prop; that prop and the three styled
+  components local to `PersonEditor.tsx` that drew the key are deleted rather than left
+  switched off, since nothing chose `true` any more. (`components/Legend.tsx` is a
+  different thing entirely and survives — it is the *chart's* colour key, and
+  `LegendItem` there is still used by `TeamChart`.) Removing the key was not enough — the
+  same sentences were still the `title` and screen-reader label on every star — so
+  `STAR_LABELS` went too. See "the rungs have no captions" below.
 - **`skills.length > 0` is what actually gates the fieldset** in `PersonEditor`, not
   which screen it is. The only case with nothing to ask is a caller holding an empty
   vocabulary, and a fieldset headed "Specialisations" with no rows under it reads as a
@@ -327,12 +330,13 @@ up" — so read the two together rather than treating either as the last word:
   and all-or-nothing — a half-loaded form would look complete and quietly create a row
   with no specialisations, which is the outcome asking here exists to prevent.
 
-A trap worth writing down, found while checking this: asserting "the scale is gone" by
-searching `innerText` for `The obvious person to ask` **passes when it should fail**.
-Those words are also the `VisuallyHidden` label on every third star, so the check
-matches the thing that is meant to survive the legend's removal. The legend renders all
-three stars of a row inside *one* span, while the rating rows give each star its own —
-so the honest test is whether `★★★` appears contiguously inside a single leaf element.
+A trap worth writing down, and it bit twice while the captions still existed: asserting
+"the key is gone" by searching `innerText` for one of its phrases **passes when it
+should fail**, because the same words were the `VisuallyHidden` label on every star and
+`innerText` includes visually-hidden text. Assert on structure instead: after the
+`<legend>`, the first line inside the Specialisations fieldset should be a skill name.
+When the key was there it was a row of glyph clusters. The general rule outlives the
+captions — anything a screen reader can read, `innerText` can match.
 
 ### Exercising it locally
 
@@ -574,9 +578,12 @@ planning_roadmap/
 │   │   ├── auth.py              ← identity; the group check + the admin tier
 │   │   ├── config.py
 │   │   ├── main.py
+│   │   ├── digest.py            ← the Monday digest as pure functions; no I/O
+│   │   ├── notifications.py     ← the scheduled runner; claim-then-send, own Lambda
 │   │   ├── db/models.py         ← item shapes; UNSET sentinel; Decimal handling
 │   │   ├── db/queries/          ← projects.py, people.py, audit.py
-│   │   ├── routes/              ← projects.py, people.py, roadmap.py, identity.py
+│   │   ├── routes/              ← projects.py, people.py, roadmap.py, identity.py,
+│   │   │                          digest.py (the caller's own preview, sends nothing)
 │   │   ├── schemas/             ← projects.py, people.py
 │   │   ├── roles.py             ← the CLOSED role vocabulary (what someone IS)
 │   │   ├── skills.py            ← the CLOSED specialisation vocabulary (what they CAN DO)
@@ -587,14 +594,15 @@ planning_roadmap/
 │   │       ├── load_confluence_rfcs.py  ← Confluence export → RFCs (one-time)
 │   │       ├── atlassian.py     ← clean_adf: the ONE ADF cleanup, three callers
 │   │       └── fix_adf_bodies.py        ← idempotent repair of already-imported bodies
-│   └── tests/                   ← 435 tests, moto-backed. test_people_self_service.py
+│   └── tests/                   ← 491 tests, moto-backed. test_people_self_service.py
 │                                  is the who-may-act-on-whom rule, over HTTP
 ├── src/                         ← React frontend
 │   ├── App.tsx                  ← LoginGate + BrowserRouter + the two routes
 │   ├── pages/
 │   │   ├── RoadmapPage.tsx      ← the Gantt and its toolbar
-│   │   └── TeamPage.tsx         ← roster, roles, skills, workload;
-│   │                              hides what a non-admin cannot do
+│   │   ├── TeamPage.tsx         ← roster, roles, skills, workload;
+│   │   │                          hides what a non-admin cannot do
+│   │   └── SettingsPage.tsx     ← your own digest: switch, lookahead, live preview
 │   ├── components/
 │   │   ├── chart/               ← ChartCanvas.tsx (shared grid chrome),
 │   │   │                          Timeline.tsx, TeamChart.tsx, Lane.tsx,
@@ -1049,16 +1057,17 @@ next to ui-ux rather than at the end of the enum where new members otherwise lan
 | `stars` | 0–3 | what they can do **today** |
 | `wants_to_learn` | bool | whether they want to be **given this work** |
 
-The rungs, worded in the first person because people are usually describing
-themselves. These live in `src/utils/skills.ts` as `STAR_LABELS` and are rendered as a
-legend above the picker, so the scale is stated once rather than implied by each row:
+**THE RUNGS HAVE NO CAPTIONS.** They used to: a `STAR_LABELS` table in
+`src/utils/skills.ts` gave 1 star "can help out, with somebody alongside" up to 3 star
+"the obvious person to ask". The table is deleted. The sentences said less than the
+stars did and put words in the mouth of whoever ticked the box, so a rating now states
+its own size and leaves the reading to the reader.
 
-| Stars | Label |
-|---|---|
-| 0 | Not one of their areas |
-| 1 | Can help out, with somebody alongside |
-| 2 | Can do it, but it will take longer |
-| 3 | The obvious person to ask |
+What survives is `starLabel(stars)` — `Not rated`, `1 of 3 stars`, `2 of 3 stars`,
+`3 of 3 stars` — used for `title` tooltips and screen-reader labels, the two places a
+glyph cannot go. `starLabel` is pinned to those exact strings by
+`counts the stars rather than characterising the person` in `skills.test.ts`, which is
+the guard against a caption creeping back in.
 
 **This replaced a single four-valued `level`** (`primary`/`secondary`/`learning`).
 `learning` was welded onto a capability ladder while explicitly not being a rung of
@@ -1074,9 +1083,9 @@ A zero-star entry with no appetite says nothing and is **refused** by
 instead of sending one. Zero stars *with* appetite is a real and useful answer: that
 person is exactly who a staffing search should surface when nobody else is free.
 
-`stars` **defaults to 2, not 3**. Omitting the rating must not silently make somebody
-the obvious person to ask — that is a claim about them they did not make, and it is
-the one that gets acted on when work is handed out.
+`stars` **defaults to 2, not 3**. Omitting the rating must not silently top somebody
+out — that is a claim about them they did not make, and it is the one that gets acted
+on when work is handed out.
 
 **NOTHING WAS MIGRATED, AND THE READ PATH IS THE MIGRATION.** Rows still holding a
 `level` string are mapped on read in `PersonModel._specialisations`
@@ -1438,11 +1447,105 @@ similar obligation.
 
 ---
 
+## The Monday milestone digest
+
+A Slack DM to each project's DRI on Monday morning, listing the milestones they own
+that are coming up or already past their date. Nothing else notifies anybody: this is
+the only thing in the app that speaks to a colleague unprompted.
+
+`app/digest.py` holds the whole decision — which milestones count, whose they are,
+what the message says — as pure functions over dicts, so its tests are three
+dictionaries and an assertion. `app/notifications.py` is the runner that reads the
+tables, talks to Slack, and is the only part needing moto and a fake.
+
+### Claim, then send
+
+`audit.claim_once()` — a conditional put on `attribute_not_exists(entity_id) AND
+attribute_not_exists(timestamp)` — is called **before** `slack.dm()`, never after. The
+audit table's composite key is already a per-week dedup key, so no new table was
+needed; `digest#{email}` + the Monday's date is the claim.
+
+Ordering it the other way looks safer and is not. Two Lambdas racing a retried
+EventBridge delivery would both find no claim, both send, and only then argue about
+who records it. So the direction this is allowed to fail in is a **missed week**,
+recoverable by anyone opening the roadmap, rather than a **duplicate DM**, which is
+not recoverable and is exactly how a useful notification becomes one people mute.
+
+The claim rows are invisible to the audit UI by construction: `history()` reads one
+`entity_id` and `recent(entity)` reads a GSI partition, and these are in neither.
+
+### Two switches, and why neither is redundant
+
+| | where | means |
+|---|---|---|
+| `digest_enabled` on the person | Settings page | "I want this" |
+| `DIGEST_ENABLED` on the stack | `cdk/cdk.json` | "may this deployment DM real colleagues" |
+
+Both default to **off**. The per-person one is a preference; the stack one is what
+stands between a second deploy pointed at these tables and the whole roster getting a
+real Slack message from a build nobody released.
+
+The stack switch gates **delivery only**. With it off, the schedule still fires and
+the function logs that it is disabled — which is how the wiring gets confirmed before
+anything is sent — and `GET /api/digest/preview` composes the real text regardless, so
+nothing has to be turned on in order to be looked at.
+
+### One image, two entry points
+
+`Dockerfile`'s `CMD` is `app.main.handler` (the Mangum-wrapped API). The digest
+function is the same image with `cmd=["app.notifications.lambda_handler"]`, so the
+scheduled job cannot drift from the API's view of the schema — which is the failure a
+separately built artefact eventually has.
+
+It gets its **own IAM role**, read-only on projects and people, read/write on audit,
+and read on the Slack secret. Deliberately **no Cognito verbs**: a weekly unattended
+job has no business holding standing permission to create logins on a shared pool.
+
+### EventBridge Scheduler, not an Events Rule
+
+A Rule's cron is UTC only, so "08:00 Monday" would arrive at 08:00 for half the year
+and 09:00 for the other half as Toronto moves on and off DST.
+`ScheduleExpression.cron(..., time_zone=cdk.TimeZone.AMERICA_TORONTO)` does that
+arithmetic. `retry_attempts=0`, because Scheduler's default is 185 attempts over 24
+hours and the function already swallows per-person failures.
+
+### The preview is per-caller, and that is a privacy decision
+
+`GET /api/digest/preview` composes **the caller's own** message and nothing else. The
+obvious alternative — exposing `run_weekly_digest(dry_run=True)` to the browser —
+would put one colleague's reminders in another's Settings page, and that would have
+been decided by accident rather than on purpose.
+
+It lowercases the Cognito claim before matching. `due_within` normalises `dri_email`
+on the way out and `Thomas@QWealth.com` signs in perfectly well, so matching them raw
+previews an empty digest for anyone capitalised in the pool.
+
+### The Settings page
+
+`/settings` (`src/pages/SettingsPage.tsx`) — the on/off switch, the 7/14/30 lookahead,
+and the composed message underneath it. Saved on change rather than behind a Save
+button: three independent switches, and a Save button next to a toggle is a new way to
+lose a change by navigating away.
+
+It reads the roster row **and** the preview, because neither answers the whole page.
+The row carries `digest_admin_report`, which the preview cannot report — an empty
+`unowned_report` means "not subscribed" and "nothing unowned this week" equally, and a
+switch drawn from that would sit off for a subscriber in a quiet week.
+
+The message is shown raw, asterisks and all, rather than rendered as Slack would. A
+preview that formatted it would differ from the real DM in a way that looks like a
+rendering bug when Monday arrives.
+
+`digest_admin_report` is admin-only on the server (`routes/people.py`) and hidden for
+everybody else, because it is a report about the team rather than about yourself.
+
+---
+
 ## Running the backend
 
 ```bash
 (cd fast && python3 -m venv venv && ./venv/bin/pip install -r requirements-dev.txt)
-(cd fast && ./venv/bin/python -m pytest tests -q)      # 435 tests, moto-backed
+(cd fast && ./venv/bin/python -m pytest tests -q)      # 491 tests, moto-backed
 (cd fast && ./venv/bin/python demo.py)                  # seeded demo, no AWS at all
 (cd fast && ./run.sh)                                   # needs real AWS creds + tables
 ```

@@ -11,6 +11,8 @@ from aws_cdk import (
     aws_iam as iam,
     aws_lambda as lambda_,
     aws_logs as logs,
+    aws_scheduler as scheduler,
+    aws_scheduler_targets as scheduler_targets,
 )
 from constructs import Construct
 
@@ -36,6 +38,7 @@ class LambdaStack(cdk.Stack):
         app_url: str = "",
         service_caller_arns: str = "",
         slack_secret_name: str = "",
+        digest_enabled: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -112,14 +115,17 @@ class LambdaStack(cdk.Stack):
         # Skipped entirely when no secret is named, rather than granted over an ARN
         # built from an empty string - which would deploy a statement matching nothing
         # and read, to anybody auditing it later, as though access had been intended.
-        if slack_secret_name:
+        slack_secret_arn = (
+            f"arn:aws:secretsmanager:{self.region}:{self.account}"
+            f":secret:{slack_secret_name}-??????"
+            if slack_secret_name
+            else ""
+        )
+        if slack_secret_arn:
             lambda_role.add_to_policy(
                 iam.PolicyStatement(
                     actions=["secretsmanager:GetSecretValue"],
-                    resources=[
-                        f"arn:aws:secretsmanager:{self.region}:{self.account}"
-                        f":secret:{slack_secret_name}-??????"
-                    ],
+                    resources=[slack_secret_arn],
                 )
             )
 
@@ -198,6 +204,125 @@ class LambdaStack(cdk.Stack):
                 retention=logs.RetentionDays.ONE_MONTH,
                 removal_policy=cdk.RemovalPolicy.DESTROY,
             ),
+        )
+
+        # ------------------------------------------------------------------------
+        # The Monday digest
+        # ------------------------------------------------------------------------
+        #
+        # A SECOND function off the SAME image, with the CMD overridden. Not a second
+        # build, and not a copy of the app in a zip: the job reads the roadmap through
+        # the same query modules the API does, so a separately built artefact is how a
+        # scheduled message ends up describing last month's schema. One image, two
+        # entry points, one deploy.
+        #
+        # Its own ROLE, though, and that is the part worth keeping. The API's role can
+        # create Cognito users - it has to, for invitations. Nothing about sending a
+        # digest needs that, and a scheduled job running unattended every week with
+        # standing permission to create logins on the pool SHARED with the compliance
+        # tool is a blast radius bought for nothing.
+        digest_role = iam.Role(
+            self,
+            "DigestRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AWSLambdaBasicExecutionRole"
+                )
+            ],
+        )
+
+        # Read the roadmap and the roster; the digest never edits either. The audit
+        # table is the one exception and it is read-WRITE, because the deduplication
+        # that stops a retried run sending a colleague the same DM twice is a
+        # conditional put onto it. See fast/app/db/queries/audit.py:claim_once.
+        projects_table.grant_read_data(digest_role)
+        people_table.grant_read_data(digest_role)
+        audit_table.grant_read_write_data(digest_role)
+
+        if slack_secret_arn:
+            digest_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["secretsmanager:GetSecretValue"],
+                    resources=[slack_secret_arn],
+                )
+            )
+
+        self.digest_function = lambda_.DockerImageFunction(
+            self,
+            "RoadmapDigestFunction",
+            code=lambda_.DockerImageCode.from_ecr(
+                repository=image_asset.repository,
+                tag=image_asset.image_tag,
+                # The whole reason one image can serve both. Overrides the Dockerfile's
+                # CMD of app.main.handler, which is the Mangum-wrapped API.
+                cmd=["app.notifications.lambda_handler"],
+            ),
+            role=digest_role,
+            architecture=lambda_.Architecture.ARM_64,
+            memory_size=512,
+            # Longer than the API's 30s on purpose. This one lists every Slack workspace
+            # member and then sends a DM per recipient, serially - a run is a handful of
+            # HTTP round trips per person, and timing out halfway would leave some weeks
+            # claimed and undelivered.
+            timeout=cdk.Duration.minutes(5),
+            environment={
+                "PROJECTS_TABLE_NAME": projects_table.table_name,
+                "PEOPLE_TABLE_NAME": people_table.table_name,
+                "AUDIT_TABLE_NAME": audit_table.table_name,
+                "AUDIT_BY_ENTITY_INDEX": "entity-timestamp-index",
+                "SLACK_SECRET_NAME": slack_secret_name,
+                # The master switch, and the reason the schedule can be deployed before
+                # anybody has agreed to be messaged. Off means the function still runs
+                # on Monday and still logs what it WOULD have done, and sends nothing.
+                "DIGEST_ENABLED": "true" if digest_enabled else "false",
+                "LOG_LEVEL": "INFO",
+                # No COGNITO_USER_POOL_ID, no SERVICE_CALLER_ARNS, no CORS_ORIGINS and
+                # no group settings: this function answers no requests and has no
+                # callers, so every one of those would be configuration that cannot
+                # affect anything, read later as though it could.
+            },
+            log_group=logs.LogGroup(
+                self,
+                "DigestLogGroup",
+                retention=logs.RetentionDays.ONE_MONTH,
+                removal_policy=cdk.RemovalPolicy.DESTROY,
+            ),
+        )
+
+        # EventBridge Scheduler rather than an Events rule, for one reason: a rule's
+        # cron is UTC only, so "08:00 Monday" would arrive at 08:00 for half the year
+        # and 09:00 for the other half as Toronto moves on and off daylight saving.
+        # Scheduler takes the timezone and does the arithmetic.
+        #
+        # 08:00 America/Toronto is chosen to land before the working day rather than
+        # during it. A digest read at the moment somebody is deciding what their week
+        # looks like is the only moment it is actionable - see fast/app/digest.py.
+        scheduler.Schedule(
+            self,
+            "DigestSchedule",
+            schedule=scheduler.ScheduleExpression.cron(
+                week_day="MON",
+                hour="8",
+                minute="0",
+                time_zone=cdk.TimeZone.AMERICA_TORONTO,
+            ),
+            target=scheduler_targets.LambdaInvoke(
+                self.digest_function,
+                # No retries. Scheduler's default is 185 attempts over 24 hours, which
+                # for this target is exactly wrong: the function already swallows its
+                # own per-person failures and returns a summary, so it almost never
+                # reports an error - and when it genuinely does, a retry is a second
+                # pass over people who may already have been messaged. The week claim
+                # in the audit table is what makes that safe, and it should not have
+                # to be.
+                retry_attempts=0,
+            ),
+            description="Weekly milestone digest to project DRIs",
+        )
+
+        cdk.CfnOutput(
+            self, "DigestFunctionName", value=self.digest_function.function_name
         )
 
         self.api = apigateway.RestApi(

@@ -11,6 +11,7 @@
 import axios, { AxiosError } from 'axios';
 
 import type {
+  DigestPreview,
   Identity,
   InviteResult,
   Milestone,
@@ -368,6 +369,20 @@ export async function getPeople(includeInactive = false): Promise<Person[]> {
   return response.data;
 }
 
+/**
+ * One roster row.
+ *
+ * The settings page reads itself with this rather than filtering getPeople, because a
+ * person editing their own preferences may be inactive on the roster and still able to
+ * sign in - and getPeople's default hides exactly those rows.
+ */
+export async function getPerson(email: string): Promise<Person> {
+  const response = await apiClient.get<Person>(
+    `/people/${encodeURIComponent(email)}`
+  );
+  return response.data;
+}
+
 /** Everyone, with what they own. The Team page's primary read. */
 export async function getWorkload(): Promise<PersonWorkload[]> {
   const response = await apiClient.get<PersonWorkload[]>('/people/workload');
@@ -491,6 +506,23 @@ export async function deletePerson(email: string): Promise<PersonDeleted> {
   const response = await apiClient.delete<PersonDeleted>(
     `/people/${encodeURIComponent(email)}`
   );
+  return response.data;
+}
+
+/**
+ * The Monday digest this caller would receive, composed and not sent.
+ *
+ * `days` previews a window before it is saved, which is what lets the settings page
+ * show the effect of a choice instead of asking somebody to save it and wait a week.
+ * Omitted, the server uses the stored preference.
+ *
+ * Read-only in the strongest sense: it sends no Slack message and claims no week, so
+ * looking at the digest cannot cancel it. See fast/app/routes/digest.py.
+ */
+export async function getDigestPreview(days?: number): Promise<DigestPreview> {
+  const response = await apiClient.get<DigestPreview>('/digest/preview', {
+    params: days === undefined ? undefined : { days },
+  });
   return response.data;
 }
 

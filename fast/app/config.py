@@ -126,6 +126,23 @@ SLACK_SECRET_NAME = os.environ.get("SLACK_SECRET_NAME", "aardvark-app/slack")
 # `demo.py` and pytest never reach for AWS. Empty in every deployed environment.
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "").strip()
 
+# The master switch on the Monday digest. See app/notifications.py.
+#
+# OFF by default, and this is the second of two switches rather than a duplicate of
+# the per-person one. That one answers "do I want this"; this one answers "is this
+# deployment allowed to DM real colleagues at all", and the two are different
+# questions the moment a second environment exists. A dev stack pointed at the
+# production tables would otherwise send the production roster a real digest.
+#
+# It gates DELIVERY only. The preview endpoint composes the same text with the switch
+# off, so the feature can be looked at before it is turned on - which is the whole
+# reason the switch is worth having rather than just not deploying the schedule.
+DIGEST_ENABLED = os.environ.get("DIGEST_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
 # Logging. See the Lambda note in main.py - basicConfig alone does nothing there.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 

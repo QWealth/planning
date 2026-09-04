@@ -262,6 +262,16 @@ async def update_person(
             "Only an admin can activate or deactivate someone.",
         )
 
+    # Same shape of rule, different reason. `digest_admin_report` subscribes an address
+    # to a weekly list of every unowned milestone on the roadmap - a report about the
+    # team rather than about yourself - so it is granted rather than chosen. The other
+    # two digest fields are ordinary self-service settings and are not checked here.
+    if not admin and "digest_admin_report" in body.changes():
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Only an admin can turn on the unowned-milestone report.",
+        )
+
     before = q.get_person(email)
     if before is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such person.")
