@@ -29,14 +29,17 @@ the other way round "statuses" is swallowed as an item id and 404s.
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app import work as vocab
-from app.auth import require_planning_group
+from app.auth import is_admin, require_planning_group
 from app.db.models import AuditLogModel
 from app.db.queries import audit, work as q
 from app.schemas.projects import AuditOut
 from app.schemas.work import (
+    CommentCreate,
+    CommentOut,
+    CommentUpdate,
     RfcCreate,
     RfcOut,
     RfcUpdate,
@@ -198,6 +201,165 @@ async def rfc_history(
 ) -> list[dict[str, Any]]:
     """Every recorded change to this RFC, newest first."""
     return audit.history(item_id, limit=limit)
+
+
+# ---------------------------------------------------------------------- comments
+#
+# Comments live under /api/rfcs/{id}/comments rather than a top-level /api/comments.
+# A comment is meaningless without the thing it is about, and the nested path makes
+# the item id impossible to omit - a flat route would take it in the body, where a
+# caller can forget it and orphan the row.
+#
+# WHO MAY DO WHAT
+# ---------------
+# Anyone in the planning group may read the thread and add to it. That is the whole
+# point of a status called "Open for comment": restricting who may reply would leave
+# the proposal being reviewed by whoever happens to hold a role, which is the opposite
+# of what it is asking for.
+#
+# Editing is the author alone, admin included - see _own_comment_or_403. An admin
+# rewriting somebody else's words is not moderation, it is forgery, and there is no
+# version of this app that needs it. Deleting IS allowed for an admin, because taking
+# something down is a different act from changing what it says: the text is gone and
+# the audit row records who removed it, rather than a remark silently becoming one
+# nobody made.
+
+
+def _normalise(address: Optional[str]) -> str:
+    """
+    Lowercased, trimmed address for comparison only.
+
+    require_planning_group hands back the raw Cognito claim, which preserves whatever
+    case the account was created with. Comparing that to a stored address directly
+    means an author can fail to match their own comment, so every comparison in this
+    section goes through here.
+    """
+    return (address or "").strip().lower()
+
+
+def _comment_or_404(item_id: str, comment_id: str) -> dict[str, Any]:
+    comment = q.get_comment(item_id, comment_id)
+    if comment is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such comment.")
+    return comment
+
+
+def _own_comment_or_403(comment: dict[str, Any], user_email: str) -> None:
+    """Refuse unless the caller wrote it. Deliberately has no admin override."""
+    if _normalise(comment.get("author_email")) != _normalise(user_email):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the author can edit a comment."
+        )
+
+
+@router.get("/{item_id}/comments", response_model=list[CommentOut])
+async def list_rfc_comments(
+    item_id: str,
+    user_email: str = Depends(require_planning_group),
+) -> list[dict[str, Any]]:
+    """The thread on one RFC, oldest first. 404s if the RFC is not there."""
+    _rfc_or_404(item_id)
+    return q.list_comments(item_id)
+
+
+@router.post(
+    "/{item_id}/comments",
+    response_model=CommentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_rfc_comment(
+    item_id: str,
+    body: CommentCreate,
+    user_email: str = Depends(require_planning_group),
+) -> dict[str, Any]:
+    """
+    Add a comment to an RFC.
+
+    The author is taken from the token and is not in the request body. A client that
+    could name the author is a client that can post as somebody else, and no amount of
+    validation downstream recovers from that.
+    """
+    _rfc_or_404(item_id)
+
+    comment = q.create_comment(
+        item_id=item_id,
+        author_email=_normalise(user_email),
+        body=body.body,
+    )
+
+    audit.record(
+        action="create",
+        entity=AuditLogModel.ENTITY_COMMENT,
+        entity_id=comment["comment_id"],
+        after=comment,
+        user_email=user_email,
+    )
+    return comment
+
+
+@router.patch("/{item_id}/comments/{comment_id}", response_model=CommentOut)
+async def update_rfc_comment(
+    item_id: str,
+    comment_id: str,
+    body: CommentUpdate,
+    user_email: str = Depends(require_planning_group),
+) -> dict[str, Any]:
+    """Change the text of your own comment. Nobody else's, at any permission level."""
+    _rfc_or_404(item_id)
+    before = _comment_or_404(item_id, comment_id)
+    _own_comment_or_403(before, user_email)
+
+    updated = q.update_comment(item_id, comment_id, body.body)
+    if updated is None:
+        # Deleted between the permission check and the write.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such comment.")
+
+    audit.record(
+        action="update",
+        entity=AuditLogModel.ENTITY_COMMENT,
+        entity_id=comment_id,
+        before=before,
+        after=updated,
+        user_email=user_email,
+    )
+    return updated
+
+
+@router.delete(
+    "/{item_id}/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_rfc_comment(
+    item_id: str,
+    comment_id: str,
+    request: Request,
+    user_email: str = Depends(require_planning_group),
+) -> None:
+    """
+    Remove a comment. The author may remove their own; an admin may remove any.
+
+    The before-snapshot in the audit row is the only surviving copy of the text, since
+    the row itself is hard-deleted. See AuditLogModel.ENTITY_COMMENT.
+    """
+    _rfc_or_404(item_id)
+    before = _comment_or_404(item_id, comment_id)
+
+    if not is_admin(request) and _normalise(before.get("author_email")) != _normalise(
+        user_email
+    ):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the author or an admin can delete a comment."
+        )
+
+    if not q.delete_comment(item_id, comment_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such comment.")
+
+    audit.record(
+        action="delete",
+        entity=AuditLogModel.ENTITY_COMMENT,
+        entity_id=comment_id,
+        before=before,
+        user_email=user_email,
+    )
 
 
 # ------------------------------------------------------------------------- tasks

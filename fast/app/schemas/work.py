@@ -26,7 +26,7 @@ on a task, and validation that permits nonsense is not validation.
 from datetime import date as ISODate
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.work import RfcStatus, TaskStatus
 
@@ -98,6 +98,69 @@ class RfcOut(BaseModel):
     owner_email: Optional[str] = None
     decided_on: Optional[ISODate] = None
     created_by: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+# Comments get their own, much lower cap than MAX_BODY.
+#
+# Not an arbitrary smaller number: the two are different kinds of writing. An RFC is a
+# document somebody sat down to write, and 100k leaves room for one nobody will ever
+# actually produce. A comment is a remark in a thread, and 10k is already about 1,500
+# words - past the point where the right move is to edit the proposal rather than
+# append an essay to it. The cap is a hint about that, not just a guard on item size.
+MAX_COMMENT = 10_000
+
+
+class CommentBase(BaseModel):
+    """The only field a caller ever supplies. The author comes from the token."""
+
+    body: str = Field(min_length=1, max_length=MAX_COMMENT)
+
+    @field_validator("body")
+    @classmethod
+    def _not_only_whitespace(cls, value: str) -> str:
+        """
+        Reject a comment that is blank once trimmed, and store the trimmed text.
+
+        min_length alone lets " " through, which posts an empty bubble into a thread
+        that cannot be told from a rendering bug. Trimming here rather than in the
+        route means every path that builds one of these gets it, including tests.
+        """
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("a comment cannot be empty")
+        return trimmed
+
+
+class CommentCreate(CommentBase):
+    """Body for posting a comment. comment_id and author_email are server-side."""
+
+
+class CommentUpdate(CommentBase):
+    """
+    Body for editing a comment.
+
+    `body` is required rather than optional, unlike RfcUpdate. There is exactly one
+    editable field, so "a PATCH that mentions nothing" is not a partial update - it is
+    a request that cannot mean anything, and accepting it would return 200 for a call
+    that changed nothing.
+    """
+
+
+class CommentOut(BaseModel):
+    """
+    A comment as returned by the API.
+
+    There is no `edited` boolean: `updated_at != created_at` already says it, and a
+    flag would be a second source of truth that some future write path forgets to set.
+    See CommentModel in db/models.py.
+    """
+
+    comment_id: str
+    item_id: str
+    author_email: Optional[str] = None
+    body: str
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 

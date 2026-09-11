@@ -121,6 +121,49 @@ export function formatMonth(date: Date): string {
   return MONTH.format(date);
 }
 
+const STAMP = new Intl.DateTimeFormat('en-GB', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+
+/**
+ * "13 Aug 2026, 14:23" - a stored timestamp, in the reader's own timezone.
+ *
+ * EVERY OTHER FORMATTER HERE IS UTC-PINNED. THIS ONE MUST NOT BE.
+ * --------------------------------------------------------------
+ * The rest of this module renders `YYYY-MM-DD` days, where a timezone would be an
+ * error: a milestone due the 13th is due the 13th in Vancouver too, and letting the
+ * local offset shift it renders the 12th for half the country. A comment is the
+ * opposite - it happened at an instant, and the honest rendering is what the clock on
+ * the reader's wall said at that moment.
+ *
+ * THE TRAP THIS FUNCTION EXISTS TO CLOSE
+ * --------------------------------------
+ * The backend stores `datetime.utcnow().isoformat()`, which produces
+ * "2026-09-11T14:23:45.123456" - a UTC instant carrying NO timezone marker. ECMAScript
+ * parses the date-time form without an offset as LOCAL time, so `new Date(stored)` in
+ * Toronto reads a 14:23 UTC comment as 14:23 EDT and renders it four hours late. Both
+ * the bug and the correct version produce a plausible-looking time, which is why this
+ * is a named function with a test rather than an inline `new Date(...)` at the call
+ * site that the next caller copies.
+ *
+ * So: append the Z ourselves when the string does not already carry an offset. A
+ * value that DOES carry one is left alone, so this keeps working if the backend ever
+ * moves to timezone-aware timestamps.
+ */
+export function formatTimestamp(iso: string | null | undefined): string {
+  if (!iso) {
+    return '';
+  }
+  // A trailing Z, or a +hh:mm / -hh:mm offset after the time component.
+  const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(iso);
+  const parsed = new Date(hasZone ? iso : `${iso}Z`);
+  return Number.isNaN(parsed.getTime()) ? '' : STAMP.format(parsed);
+}
+
 /**
  * Inclusive duration in days: a phase that starts and ends on the same date is one
  * day of work, not zero. Three phases in the live data are same-day.

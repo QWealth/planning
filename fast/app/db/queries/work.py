@@ -37,7 +37,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from app import config
-from app.db.models import WORK_SK, RfcModel, TaskModel
+from app.db.models import COMMENT_SK_PREFIX, WORK_SK, CommentModel, RfcModel, TaskModel
 from app.db.queries._updates import ValidationError, apply_update
 from app.db.queries._updates import iso as _iso
 from app.work import Kind
@@ -55,6 +55,12 @@ dynamodb = boto3.resource("dynamodb", region_name=config.AWS_REGION)
 # different document with a different lifecycle, and allowing the flip would leave
 # rows carrying fields their new kind has no meaning for.
 RFC_UPDATABLE = {"title", "body", "status", "project_id", "owner_email", "decided_on"}
+
+# Only the text. `author_email` and `created_at` are absent deliberately and are the
+# reason this is an allowlist rather than a blocklist: a comment whose author can be
+# rewritten is a comment that can be put in somebody else's mouth, which is a worse
+# failure than anything the other allowlists here guard against.
+COMMENT_UPDATABLE = {"body"}
 TASK_UPDATABLE = {
     "title",
     "body",
@@ -348,6 +354,11 @@ def delete_rfc(item_id: str) -> bool:
     """
     if get_rfc(item_id) is None:
         return False
+    # Children first. A partial failure then leaves an item with fewer comments than
+    # it had, which is visible and fixable; the other order leaves comment rows in a
+    # partition whose item is gone, and nothing in this module would ever list them
+    # again.
+    _delete_comments(item_id)
     try:
         get_work_table().delete_item(Key=_key(item_id))
     except ClientError as e:
@@ -385,9 +396,150 @@ def delete_task(item_id: str) -> bool:
             # The child went away underneath us. Nothing to promote, nothing to fix.
             logger.warning("Subtask %s vanished while promoting", child["item_id"])
 
+    # Comments are a cascade, unlike subtasks, and the difference is what they are.
+    # A subtask is work that outlives the ticket it was raised under; a comment is a
+    # remark ABOUT this item and means nothing detached from it. Promoting one would
+    # not even be expressible - there is nowhere for it to go.
+    _delete_comments(item_id)
+
     try:
         table.delete_item(Key=_key(item_id))
     except ClientError as e:
         logger.error("Error deleting task %s: %s", item_id, e)
         raise
     return True
+
+
+# --------------------------------------------------------------------- comments
+#
+# Comments hang off an item as child rows in the same partition, so a thread is one
+# Query rather than a second table or a scan. See COMMENT_SK_PREFIX in db/models.py
+# for why the sort key carries the timestamp.
+#
+# None of these check that the item exists. The routes do, because they have to
+# resolve it anyway to decide whether the caller may see it at all, and a second
+# existence check here would be a second round trip to reach the same answer.
+
+
+def _comment_rows(item_id: str) -> list[dict[str, Any]]:
+    """Raw comment rows for an item, oldest first, keys included."""
+    try:
+        response = get_work_table().query(
+            KeyConditionExpression=Key("item_id").eq(item_id)
+            & Key("sk").begins_with(COMMENT_SK_PREFIX)
+        )
+    except ClientError as e:
+        logger.error("Error listing comments on %s: %s", item_id, e)
+        raise
+    return response.get("Items", [])
+
+
+def list_comments(item_id: str) -> list[dict[str, Any]]:
+    """
+    Every comment on an item, oldest first.
+
+    Not paginated, and that is a judgement about threads rather than an oversight. A
+    proposal people are actually arguing over collects tens of remarks, not thousands,
+    and a reader who has to click "more" to reach the objection that decided the thing
+    is worse served than one who scrolls. If a thread ever gets long enough to matter,
+    the sort key already supports paging from a cursor.
+    """
+    return [CommentModel.from_item(row) for row in _comment_rows(item_id)]
+
+
+def _find_comment_row(item_id: str, comment_id: str) -> Optional[dict[str, Any]]:
+    """
+    The raw row for one comment, keys included, or None.
+
+    A scan of the item's own comments rather than a get_item, because the sort key
+    contains created_at and the caller only has the id. The partition is one thread,
+    so this reads what list_comments would have read anyway.
+    """
+    for row in _comment_rows(item_id):
+        if row.get("comment_id") == comment_id:
+            return row
+    return None
+
+
+def get_comment(item_id: str, comment_id: str) -> Optional[dict[str, Any]]:
+    """One comment, or None. Callers needing the author for a permission check use this."""
+    row = _find_comment_row(item_id, comment_id)
+    return CommentModel.from_item(row) if row is not None else None
+
+
+def create_comment(item_id: str, author_email: str, body: str) -> dict[str, Any]:
+    """Add a comment to an item. The author is the caller and is fixed from here on."""
+    item = CommentModel.create_item(
+        item_id=item_id,
+        comment_id=_new_id("cmt"),
+        author_email=author_email,
+        body=body,
+    )
+    try:
+        get_work_table().put_item(Item=item)
+    except ClientError as e:
+        logger.error("Error creating comment on %s: %s", item_id, e)
+        raise
+    return CommentModel.from_item(item)
+
+
+def update_comment(item_id: str, comment_id: str, body: str) -> Optional[dict[str, Any]]:
+    """
+    Replace a comment's text, leaving every other field alone.
+
+    Returns None when the comment is gone, which the route turns into a 404. The
+    author is not a parameter: who may call this is the route's decision, and letting
+    it be passed here would make "edit as somebody else" a typo away.
+    """
+    row = _find_comment_row(item_id, comment_id)
+    if row is None:
+        return None
+    try:
+        updated = apply_update(
+            get_work_table(),
+            {"item_id": item_id, "sk": row["sk"]},
+            {"body": body},
+            COMMENT_UPDATABLE,
+            "item_id",
+        )
+    except ValidationError:
+        # Deleted between the read and the write.
+        return None
+    return CommentModel.from_item(updated)
+
+
+def delete_comment(item_id: str, comment_id: str) -> bool:
+    """Remove one comment. False when it was not there to begin with."""
+    row = _find_comment_row(item_id, comment_id)
+    if row is None:
+        return False
+    try:
+        get_work_table().delete_item(Key={"item_id": item_id, "sk": row["sk"]})
+    except ClientError as e:
+        logger.error("Error deleting comment %s on %s: %s", comment_id, item_id, e)
+        raise
+    return True
+
+
+def _delete_comments(item_id: str) -> int:
+    """
+    Remove every comment on an item. Used when the item itself is deleted.
+
+    One delete per row rather than a batch: a thread is small, and batch_writer's
+    partial-failure behaviour would need handling to say anything honest about what
+    actually went. Returns how many were removed, which the caller may log.
+    """
+    rows = _comment_rows(item_id)
+    if not rows:
+        return 0
+    table = get_work_table()
+    removed = 0
+    for row in rows:
+        try:
+            table.delete_item(Key={"item_id": item_id, "sk": row["sk"]})
+            removed += 1
+        except ClientError as e:
+            # Not re-raised: the caller is midway through deleting the item, and
+            # abandoning that leaves a worse state than one stranded comment row.
+            logger.error("Error deleting comment row %s on %s: %s", row.get("sk"), item_id, e)
+    return removed

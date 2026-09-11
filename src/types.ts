@@ -463,6 +463,26 @@ export interface Rfc {
 }
 
 /**
+ * One remark on an RFC.
+ *
+ * There is no `edited` flag, deliberately: `updated_at !== created_at` already says
+ * it, and a second field meaning the same thing is one a future write path forgets to
+ * set. The renderer derives the "edited" marker rather than trusting a boolean.
+ *
+ * `author_email` is written from the caller's token by the API and is not editable at
+ * any permission level, so it can be treated as a fact about who said this rather than
+ * a mutable attribute that happens to hold an address.
+ */
+export interface RfcComment {
+  comment_id: string;
+  item_id: string;
+  author_email: string | null;
+  body: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
  * A ticket or a subtask. ONE type, because they are one entity.
  *
  * `parent_id` is the only thing telling them apart: null means top-level (what

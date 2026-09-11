@@ -484,9 +484,18 @@ class TestRosterVeto:
     """
 
     def test_an_address_on_the_roster_passes(self, aws):
+        """
+        The real AUTHOR_EMAIL, against a roster holding exactly the addresses in it.
+
+        Seeded from the dict rather than from a hardcoded address, because the dict
+        grows every time an import turns up an author who resolves. Naming one here
+        meant the next addition failed this test for the one reason it is not about -
+        a roster the test forgot to populate, rather than a mapping that is wrong.
+        """
         from app.db.queries import people as people_q
 
-        people_q.create_person(email="thomas@qwealth.com", name="Thomas")
+        for address in sorted(set(loader.AUTHOR_EMAIL.values())):
+            people_q.create_person(email=address, name=address.split("@")[0])
         loader.check_author_roster()  # the real table, against the real roster
 
     def test_an_address_not_on_the_roster_is_a_hard_stop(self, aws):

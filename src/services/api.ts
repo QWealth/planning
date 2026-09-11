@@ -30,6 +30,7 @@ import type {
   ProjectPatch,
   ProjectSummary,
   Rfc,
+  RfcComment,
   RfcCreate,
   RfcPatch,
   Roadmap,
@@ -595,6 +596,56 @@ export async function patchRfc(itemId: string, patch: RfcPatch): Promise<Rfc> {
  */
 export async function deleteRfc(itemId: string): Promise<void> {
   await apiClient.delete(`/rfcs/${encodeURIComponent(itemId)}`);
+}
+
+/* --------------------------------------------------------------- comments -- */
+
+/**
+ * The thread on one RFC, oldest first.
+ *
+ * The order comes from the server's sort key rather than a sort here, so a caller
+ * cannot forget to apply one and render a discussion out of sequence.
+ */
+export async function getRfcComments(itemId: string): Promise<RfcComment[]> {
+  const response = await apiClient.get<RfcComment[]>(
+    `/rfcs/${encodeURIComponent(itemId)}/comments`
+  );
+  return response.data;
+}
+
+/**
+ * Post a comment.
+ *
+ * Note what is NOT a parameter: the author. The API takes it from the token, and a
+ * signature that accepted one here would be a way to post as somebody else the first
+ * time a caller passed the wrong variable.
+ */
+export async function createRfcComment(itemId: string, body: string): Promise<RfcComment> {
+  const response = await apiClient.post<RfcComment>(
+    `/rfcs/${encodeURIComponent(itemId)}/comments`,
+    { body }
+  );
+  return response.data;
+}
+
+/** Change the text of your own comment. The API refuses anybody else's, admin included. */
+export async function updateRfcComment(
+  itemId: string,
+  commentId: string,
+  body: string
+): Promise<RfcComment> {
+  const response = await apiClient.patch<RfcComment>(
+    `/rfcs/${encodeURIComponent(itemId)}/comments/${encodeURIComponent(commentId)}`,
+    { body }
+  );
+  return response.data;
+}
+
+/** Remove a comment. Yours, or anybody's if you are an admin. */
+export async function deleteRfcComment(itemId: string, commentId: string): Promise<void> {
+  await apiClient.delete(
+    `/rfcs/${encodeURIComponent(itemId)}/comments/${encodeURIComponent(commentId)}`
+  );
 }
 
 /* ------------------------------------------------------------------ tasks -- */

@@ -58,6 +58,20 @@ MILESTONE_SK_PREFIX = "MILESTONE#"
 # still sorts first and items[0] stays a safe assumption.
 WORK_SK = "#ITEM"
 
+# The child row the note above predicted. "C" (0x43) sorts after "#" (0x23), so the
+# item itself is still items[0] and every read that assumed so keeps working.
+#
+# Unlike PHASE_SK_PREFIX, the timestamp goes IN the key: `COMMENT#<created_at>#<id>`.
+# A phase has no natural order within its project, but a thread does, and putting the
+# time in the sort key means DynamoDB returns a discussion already in reading order -
+# no client-side sort that a second caller can forget to apply.
+#
+# The cost of that choice is that a comment's key cannot be derived from its id alone,
+# so editing or deleting one has to find the row first. That cost is zero in practice:
+# both operations must read the comment anyway to check who wrote it before allowing
+# the change.
+COMMENT_SK_PREFIX = "COMMENT#"
+
 
 class Role(str, Enum):
     """Who owns a project, in which capacity."""
@@ -580,6 +594,76 @@ class RfcModel:
         }
 
 
+class CommentModel:
+    """
+    One remark on a work item, stored as a child row of the item it is about.
+
+    WHY THE AUTHOR IS A STORED FIELD AND NOT A LOOKUP
+    -------------------------------------------------
+    `author_email` is written once, at creation, from the caller's token. It is not
+    re-derived on read and it is never updatable - see COMMENT_UPDATABLE. A comment is
+    a thing somebody said, so the name against it has to be the name of whoever said
+    it, fixed at the moment they said it. Recomputing it later from anything - the
+    item's owner, the roster, a session - is how a remark ends up attributed to the
+    wrong person after an unrelated change.
+
+    WHY `updated_at` RATHER THAN AN `edited` FLAG
+    ---------------------------------------------
+    A boolean would have to be set by the one code path that edits, and would silently
+    stay false for any future path that forgets. `updated_at != created_at` cannot be
+    forgotten, because both are written by this module and any edit moves one of them.
+    The reader decides how to present that; the row just records the two times.
+
+    There is deliberately no `deleted` or `hidden` field. A comment is removed by
+    deleting the row, for the same reason an RFC is hard-deleted: a tombstone in a
+    discussion is worse than an absence, and the audit trail keeps the record.
+    """
+
+    @staticmethod
+    def sort_key(created_at: str, comment_id: str) -> str:
+        """
+        The child row's sort key. See COMMENT_SK_PREFIX for why the time is in it.
+
+        The id is appended rather than trusted to be unique on its own within a
+        timestamp: `_now()` has microsecond resolution, so a collision needs two
+        comments on the same item in the same microsecond, but "needs" is not "cannot"
+        and losing a comment to a silently overwritten key is not a failure worth
+        risking to save twelve characters.
+        """
+        return f"{COMMENT_SK_PREFIX}{created_at}#{comment_id}"
+
+    @staticmethod
+    def create_item(
+        item_id: str,
+        comment_id: str,
+        author_email: str,
+        body: str,
+    ) -> dict[str, Any]:
+        """Build a comment row. `created_at` is computed once and used in the key."""
+        now = _now()
+        return {
+            "item_id": item_id,
+            "sk": CommentModel.sort_key(now, comment_id),
+            "comment_id": comment_id,
+            "author_email": author_email,
+            "body": body,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    @staticmethod
+    def from_item(item: dict[str, Any]) -> dict[str, Any]:
+        """Convert a DynamoDB comment row to a schema-compatible dict."""
+        return {
+            "comment_id": item.get("comment_id"),
+            "item_id": item.get("item_id"),
+            "author_email": item.get("author_email"),
+            "body": item.get("body") or "",
+            "created_at": item.get("created_at"),
+            "updated_at": item.get("updated_at"),
+        }
+
+
 class TaskModel:
     """
     A piece of work that is not a phase on the chart.
@@ -683,6 +767,16 @@ class AuditLogModel:
     # other's rows and throw most of them away.
     ENTITY_RFC = "rfc"
     ENTITY_TASK = "task"
+    # A comment audits under its own entity, keyed by comment_id rather than by the
+    # item it hangs on. Filing it under the RFC would be tempting - it is the RFC's
+    # /history screen a reader is looking at - but entity_id is what `history` queries,
+    # so a deleted comment would then be interleaved with edits to the proposal itself
+    # and there would be no way to ask "what happened to this remark" on its own.
+    #
+    # Auditing deletes at all is the point. A comment row is hard-deleted like the RFC
+    # it sits under, so the before-snapshot here is the only remaining copy of what
+    # somebody actually said.
+    ENTITY_COMMENT = "comment"
     # Not a mutation, and the only entity here that nobody performed. It records that
     # the Monday digest was sent to one person for one week, and it is what stops a
     # retried schedule sending a second copy - see queries/audit.py:claim_once.

@@ -26,6 +26,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import styled from 'styled-components';
 
 import Markdown from '../components/Markdown';
+import RfcComments from '../components/RfcComments';
 import RfcEditor from '../components/RfcEditor';
 import {
   deleteRfc,
@@ -291,6 +292,12 @@ export default function RfcPage() {
       <Document>
         <Markdown>{rfc.body}</Markdown>
       </Document>
+
+      {/* Below the document, not beside it. The proposal is the thing being read and
+          the thread is what happened next, so the reading order is the page order.
+          Absent from the editor and from /rfcs/new for the obvious reason: there is
+          nothing to discuss until the document has been saved and has an id. */}
+      <RfcComments itemId={rfc.item_id} />
     </Panel>
   );
 }
