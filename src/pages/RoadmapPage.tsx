@@ -28,10 +28,12 @@ import { useIdentity } from '../components/AppShell';
 import Timeline, { laneAnchorId } from '../components/chart/Timeline';
 import { describeError, getRoadmap, saveLaneOrder } from '../services/api';
 import { palette } from '../styles/theme';
-import { ErrorText, Hint, Panel, PrimaryButton, SecondaryButton } from '../styles/ui';
+import { ErrorText, Hint, Panel, PrimaryButton, SecondaryButton, Select } from '../styles/ui';
 import type { Milestone, Phase, Project, ProjectPatch, Roadmap } from '../types';
 import { buildGrid, todayISO } from '../utils/dates';
 import { laneOrderChanges, moveLane } from '../utils/laneOrder';
+import { SORT_OPTIONS, sortLanes, splitComplete } from '../utils/laneView';
+import type { SortMode } from '../utils/laneView';
 import { milestoneDates, sortMilestones } from '../utils/milestones';
 import { responsibleProjectIds } from '../utils/projects';
 
@@ -57,6 +59,25 @@ const Status = styled.p`
 const NewProjectHead = styled.h2`
   font-size: 15px;
   padding-left: 30px;
+`;
+
+/* The heading over the finished lanes.
+
+   Inset to 30px like NewProjectHead so it lines up with the lane-name column rather
+   than the panel edge, and sized down from a page heading because this section is a
+   footnote to the roadmap, not a second roadmap. */
+const CompleteHead = styled.h2`
+  font-size: 13px;
+  margin: 0 0 4px;
+  padding-left: 30px;
+  color: ${palette.inkSoft};
+`;
+
+const CompleteNote = styled.p`
+  margin: 0 0 12px;
+  padding-left: 30px;
+  font-size: 12px;
+  color: ${palette.inkSoft};
 `;
 
 export default function RoadmapPage() {
@@ -90,6 +111,17 @@ export default function RoadmapPage() {
    */
   const [draftOrder, setDraftOrder] = useState<readonly string[] | null>(null);
   const [savingOrder, setSavingOrder] = useState(false);
+
+  /*
+    How the list is ORDERED ON SCREEN, which is not the same as how it is stored.
+
+    Deliberately not persisted - not to the row, not to localStorage. lane_order is the
+    roadmap's shared arrangement and the one everybody discusses; a sort is one reader
+    looking at the same roadmap a different way for a minute. Remembering it would mean
+    somebody opens the page a week later, sees it ordered by progress, and has no idea
+    why it disagrees with the order they remember.
+  */
+  const [sortMode, setSortMode] = useState<SortMode>('roadmap');
 
   // Captured once per mount. Recomputed on every render it would be a new string
   // each time, so every memo below - including the grid - would rebuild constantly.
@@ -313,22 +345,58 @@ export default function RoadmapPage() {
    * and the end is where a new lane goes anyway. Array sort is stable, so several such
    * lanes keep their stored order relative to each other.
    */
+  /** Every lane, in the order chosen for viewing. The grid spans this, not one half. */
+  const arranged = useMemo(() => sortLanes(stored, sortMode, today), [stored, sortMode, today]);
+
+  /**
+   * Split into what is running and what has finished, AFTER sorting, so both sections
+   * come out in the chosen order. See utils/laneView.ts for why "complete" defers to
+   * laneVerdict rather than being decided here.
+   */
+  const { live: arrangedLive, complete } = useMemo(
+    () => splitComplete(arranged, today),
+    [arranged, today]
+  );
+
+  /**
+   * The running lanes AS STORED - the baseline a reorder is measured against.
+   *
+   * It has to be the same population as `draftOrder`, which only ever holds the
+   * running lanes, or the two disagree on length and `orderChanged` reports a change
+   * before anybody has touched anything.
+   */
+  const storedLive = useMemo(() => splitComplete(stored, today).live, [stored, today]);
+
   const projects = useMemo(() => {
     if (!draftOrder) {
-      return stored;
+      return arrangedLive;
     }
     const rank = new Map(draftOrder.map((projectId, index) => [projectId, index]));
-    return [...stored].sort(
+    return [...arrangedLive].sort(
       (a, b) =>
         (rank.get(a.project_id) ?? Number.POSITIVE_INFINITY) -
         (rank.get(b.project_id) ?? Number.POSITIVE_INFINITY)
     );
-  }, [stored, draftOrder]);
+  }, [arrangedLive, draftOrder]);
 
-  /** The rows a save would actually write, which is not the same as what moved. */
+  /**
+   * The rows a save would actually write, which is not the same as what moved.
+   *
+   * Computed over the running lanes only, which renumbers them 0..n-1 and leaves the
+   * finished ones holding whatever order they had. So a running lane and a finished
+   * one routinely end up sharing a lane_order, and that is fine here in a way it is
+   * not for the archived collision the nextLaneOrder note describes: the two
+   * populations are split before either is rendered, so they are never sorted against
+   * each other and a shared number is never visible.
+   *
+   * It surfaces in exactly one case - a complete project whose progress is edited back
+   * down, rejoining the running list already holding somebody else's number. The sort
+   * breaks ties by name, so the result is deterministic rather than jumpy, and the
+   * next save renumbers it away.
+   */
   const pendingOrder = useMemo(
-    () => (draftOrder ? laneOrderChanges(draftOrder, stored) : []),
-    [draftOrder, stored]
+    () => (draftOrder ? laneOrderChanges(draftOrder, storedLive) : []),
+    [draftOrder, storedLive]
   );
 
   /**
@@ -348,9 +416,9 @@ export default function RoadmapPage() {
   const orderChanged = useMemo(
     () =>
       draftOrder !== null &&
-      (draftOrder.length !== stored.length ||
-        stored.some((project, index) => draftOrder[index] !== project.project_id)),
-    [draftOrder, stored]
+      (draftOrder.length !== storedLive.length ||
+        storedLive.some((project, index) => draftOrder[index] !== project.project_id)),
+    [draftOrder, storedLive]
   );
 
   const onMoveProject = useCallback((projectId: string, delta: -1 | 1) => {
@@ -399,7 +467,11 @@ export default function RoadmapPage() {
   }, [draftOrder, orderChanged, pendingOrder, load]);
 
   const grid = useMemo(() => {
-    const dates = projects.flatMap((project) => [
+    // Spans EVERY lane, finished ones included. The complete section draws its bars
+    // against this same grid, so a shorter span would put the two sections on
+    // different scales and make a finished project's bar meaningless next to a
+    // running one directly above it.
+    const dates = arranged.flatMap((project) => [
       ...project.phases.flatMap((phase) =>
         [phase.start, phase.end].filter((d): d is string => d !== null)
       ),
@@ -415,7 +487,7 @@ export default function RoadmapPage() {
     const start = dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : today;
     const end = dates.length ? dates.reduce((a, b) => (a > b ? a : b)) : today;
     return buildGrid(start, end, today);
-  }, [projects, today]);
+  }, [arranged, today]);
 
   // One past the highest lane_order loaded, which is the highest ACTIVE one - this
   // page no longer fetches archived lanes at all - so a new lane can be given the same
@@ -425,12 +497,25 @@ export default function RoadmapPage() {
   // collision is two lanes adjacent in a different order than expected, and only if an
   // archived lane is ever restored.
   const nextLaneOrder = useMemo(
-    () => projects.reduce((max, project) => Math.max(max, project.lane_order + 1), 0),
-    [projects]
+    () => stored.reduce((max, project) => Math.max(max, project.lane_order + 1), 0),
+    [stored]
   );
 
-  const allExpanded = projects.length > 0 && expanded.size === projects.length;
+  // Across BOTH sections: a finished lane still opens to show its phases, so counting
+  // only the running ones would leave "Expand all" claiming everything was open while
+  // the complete section sat collapsed.
+  const allExpanded = arranged.length > 0 && expanded.size === arranged.length;
   const reordering = draftOrder !== null;
+
+  /*
+    Rearranging is only meaningful in the stored order.
+
+    "Move up" means "give this a lower lane_order". While the list is sorted by name or
+    progress, position on screen is not lane_order, so the arrow would move a row to a
+    place it does not visibly occupy - and the save would write an arrangement nobody
+    could see they were making. Disabled with the reason stated, rather than hidden.
+  */
+  const canReorder = sortMode === 'roadmap';
 
   return (
     <>
@@ -475,12 +560,28 @@ export default function RoadmapPage() {
             <SecondaryButton
               type="button"
               onClick={() =>
-                setExpanded(allExpanded ? new Set() : new Set(projects.map((p) => p.project_id)))
+                setExpanded(allExpanded ? new Set() : new Set(arranged.map((p) => p.project_id)))
               }
-              disabled={projects.length === 0}
+              disabled={arranged.length === 0}
             >
               {allExpanded ? 'Collapse all' : 'Expand all'}
             </SecondaryButton>
+
+            {/* Sorting changes only what this reader sees; it writes nothing. The
+                title on each option carries the tie-break and the nulls-last rule,
+                which are the two things that otherwise look like bugs. */}
+            <Select
+              aria-label="Sort projects"
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as SortMode)}
+              disabled={arranged.length < 2}
+            >
+              {SORT_OPTIONS.map((option) => (
+                <option key={option.mode} value={option.mode} title={option.description}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
             {/* Disabled rather than hidden while the New project form is open. Entering
                 the mode would have to either close that form, losing what was typed
                 into it, or leave it open above a chart whose rows are moving. Two lanes
@@ -489,10 +590,25 @@ export default function RoadmapPage() {
             <SecondaryButton
               type="button"
               onClick={() => setDraftOrder(projects.map((p) => p.project_id))}
-              disabled={projects.length < 2 || addingProject}
+              disabled={projects.length < 2 || addingProject || !canReorder}
             >
               Reorder
             </SecondaryButton>
+            {/*
+              Says why, rather than leaving a greyed button to be puzzled over.
+
+              A visible hint and NOT a `title` on the button. A tooltip never reaches a
+              touch or keyboard user, and putting one here also cost the button its
+              accessible name - the name computation took the title over the text, so
+              the control announced itself as a sentence of explanation rather than as
+              "Reorder".
+            */}
+            {!canReorder && projects.length >= 2 ? (
+              <Hint>
+                Sorted by {SORT_OPTIONS.find((o) => o.mode === sortMode)?.label}. Switch to
+                Roadmap order to rearrange.
+              </Hint>
+            ) : null}
           </>
         )}
         <Spacer />
@@ -537,6 +653,42 @@ export default function RoadmapPage() {
           />
         )}
       </Panel>
+
+      {/*
+        Finished work, below the roadmap rather than removed from it.
+
+        Absent entirely when nothing has finished, rather than an empty panel headed
+        "Complete" - a heading over nothing reads as something that failed to load.
+
+        These lanes keep their move controls off even while reordering: they are not in
+        `draftOrder`, so an arrow here would have nothing to reorder against. They are
+        still expandable and still editable, because a finished project is a record
+        people go back and correct, not a read-only archive.
+      */}
+      {complete.length > 0 ? (
+        <Panel aria-label="Complete projects">
+          <CompleteHead>Complete</CompleteHead>
+          <CompleteNote>
+            {complete.length} project{complete.length === 1 ? '' : 's'} with every phase at
+            100%. Ongoing Maintenance bands are not counted, so a project stays here once
+            its real work is done.
+          </CompleteNote>
+          <Timeline
+            projects={complete}
+            people={roadmap?.people ?? []}
+            grid={grid}
+            today={today}
+            expanded={expanded}
+            onToggle={toggle}
+            onMoveProject={null}
+            onPhaseSaved={onPhaseSaved}
+            onPhaseDeleted={onPhaseDeleted}
+            onMilestoneSaved={onMilestoneSaved}
+            onMilestoneDeleted={onMilestoneDeleted}
+            onProjectSaved={onProjectSaved}
+          />
+        </Panel>
+      ) : null}
     </>
   );
 }
