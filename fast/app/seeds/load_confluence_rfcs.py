@@ -136,6 +136,7 @@ PAGE_PROJECT: dict[str, str] = {
     "1744568321": "DocuTelligence",       # OCR field validation + bulk upload
     "1741193217": "Net Worth",            # Net Worth Statement v1
     "1750433793": "Net Worth",            # Net Worth early wireframe field mappings
+    "1769046017": "Net Worth",            # Net Worth data migration + integration plan
     "1022984193": "D2",                   # Docusign2Data design doc
 }
 
@@ -183,6 +184,13 @@ SKIP_PAGES: dict[str, str] = {
 # about, so the roster gets to veto anything written here.
 AUTHOR_EMAIL: dict[str, str] = {
     "thomas kosciuch": "thomas@qwealth.com",
+    # Not a display name inferred into an address, which is the thing this table exists
+    # to avoid. Confluence renders this author as the literal string "timan.zheng" - an
+    # account whose display name was never set to a human name - and the roster already
+    # holds timan.zheng@qwealth.com. The local part IS the display name, character for
+    # character, so this is a lookup rather than a guess, and check_author_roster below
+    # fails the run if the roster ever stops agreeing.
+    "timan.zheng": "timan.zheng@qwealth.com",
 }
 
 # A human's call on a page whose own status is genuinely ambiguous, keyed by page id.
