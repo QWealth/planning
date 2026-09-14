@@ -37,7 +37,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app import cognito, invites
 from app.auth import require_service_caller
+from app.db.models import AuditLogModel
+from app.db.queries import audit, projects as projects_q
+from app.db.queries._updates import ValidationError
 from app.schemas.people import InviteIn, InviteOut
+from app.schemas.projects import ServiceProgressIn, ServiceProgressOut
 
 logger = logging.getLogger(__name__)
 
@@ -68,3 +72,90 @@ async def service_invite(
 
     logger.info("Service invite by %s for %s", caller, result["email"])
     return result
+
+
+@router.post("/phases/progress", response_model=ServiceProgressOut)
+async def service_set_progress(
+    body: ServiceProgressIn,
+    caller: str = Depends(require_service_caller),
+) -> dict[str, Any]:
+    """
+    Record progress on phases, on behalf of the person who submitted the Slack modal.
+
+    THE SECOND THING THIS DOOR CAN DO, and it is a different kind of thing from the
+    first. /invite creates a Cognito account; this writes roadmap data. Both are gated
+    by the same two locks - the execute-api grant in aardvarkaap/lib/aardvark-app-stack.ts
+    and the role allowlist in cdk/cdk.json - and the grant is scoped per METHOD, so this
+    route does not become reachable until that policy names it too. A deploy of one repo
+    without the other fails closed with a 403.
+
+    WHY THE AUDIT NAMES A PERSON AND NOT THE SERVICE
+
+    The module docstring explains why an invite is attributed to `service:<RoleName>`:
+    the API cannot know which Slack admin typed the command, and inventing an address
+    would be worse than admitting it. That reasoning does not transfer here, and the
+    difference is worth being explicit about rather than quietly copying the pattern.
+
+    The nudge is a DM to ONE person, and the interaction payload Slack hands the bot
+    names that person. So the caller genuinely knows who acted, and recording
+    `service:` would be discarding a fact we hold - leaving a progress figure on the
+    roadmap that nobody appears to have entered. Progress is data people plan against;
+    an unattributed change to it is worse than an unattributed invite.
+
+    The cost is that this endpoint trusts `actor_email`. A compromised bot could
+    attribute an edit to a colleague who never made it. That is a real widening and is
+    accepted deliberately: reaching this route needs AWS credentials for a role that
+    only this account's ECS task can assume, and anybody holding those can already call
+    every route behind this door.
+
+    PARTIAL SUCCESS IS REPORTED, NOT ROLLED BACK
+
+    Each phase is written on its own. A phase deleted between the DM being sent and the
+    modal being submitted comes back in `missing` rather than failing the whole batch,
+    because the other five answers the person just gave are worth keeping. DynamoDB has
+    no transaction spanning these rows that would make all-or-nothing honest anyway.
+    """
+    updated = 0
+    missing: list[str] = []
+
+    for item in body.updates:
+        before = projects_q.get_phase(item.project_id, item.phase_id)
+        if before is None:
+            missing.append(item.phase_id)
+            continue
+
+        try:
+            after = projects_q.update_phase(
+                item.project_id, item.phase_id, {"progress": item.progress}
+            )
+        except ValidationError as e:
+            # The phase's own rules refused this - a structural phase cannot carry
+            # progress, for one. Reported as missing rather than raised: it is one row
+            # of a batch, and the person is owed the rest of their answers.
+            logger.warning("Progress refused for %s: %s", item.phase_id, e)
+            missing.append(item.phase_id)
+            continue
+
+        if after is None:
+            missing.append(item.phase_id)
+            continue
+
+        updated += 1
+        audit.record(
+            action="update",
+            entity=AuditLogModel.ENTITY_PHASE,
+            entity_id=item.phase_id,
+            before=before,
+            after=after,
+            # The person, not the service. See above.
+            user_email=body.actor_email,
+        )
+
+    logger.info(
+        "Progress set by %s (via %s): %s updated, %s missing",
+        body.actor_email,
+        caller,
+        updated,
+        len(missing),
+    )
+    return {"actor_email": body.actor_email, "updated": updated, "missing": missing}

@@ -11,6 +11,7 @@ to that person, and how many".
 """
 
 from datetime import date
+from typing import Optional
 
 import pytest
 
@@ -35,6 +36,7 @@ class FakeSlack:
         self.list_error = list_error
         self.refuses = refuses
         self.sent: list[tuple] = []
+        self.sent_blocks: list[tuple] = []
 
     def list_people(self, force: bool = False) -> dict:
         if self.list_error:
@@ -45,10 +47,25 @@ class FakeSlack:
         ]
         return {"people": people, "seen": len(people)}
 
-    def dm(self, slack_user_id: str, text: str) -> None:
+    def dm(
+        self,
+        slack_user_id: str,
+        text: str,
+        blocks: Optional[list] = None,
+    ) -> None:
+        """
+        Mirrors slack.dm, `blocks` included.
+
+        The keyword is accepted even though the digest never passes one, because a
+        double whose signature has drifted from the real function fails every test that
+        touches it with a TypeError - which is what happened when the progress nudge
+        taught dm() to send Block Kit. Recorded alongside the text so a test can assert
+        on the rendered message rather than only on the notification line.
+        """
         if self.dm_error or slack_user_id in self.refuses:
             raise slack.SlackError(self.dm_error or "channel_not_found")
         self.sent.append((slack_user_id, text))
+        self.sent_blocks.append((slack_user_id, blocks))
 
 
 @pytest.fixture

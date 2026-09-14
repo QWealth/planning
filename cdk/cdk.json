@@ -111,6 +111,17 @@
       "text regardless, so nothing has to be turned on in order to be looked at.",
       "Set to true once the team has agreed to be messaged."
     ],
-    "digest_enabled": false
+    "digest_enabled": false,
+    "_progress_enabled_comment": [
+      "The Monday/Wednesday progress nudge, which is a DIFFERENT switch from the one",
+      "above and must stay one. The digest goes only to people who opted in on the",
+      "settings page; the nudge goes to every phase owner and project DRI whether they",
+      "asked or not, and the buttons in it write to the roadmap.",
+      "",
+      "It also must not be turned on before Aardvark Aap is deployed with a handler for",
+      "the button. A nudge that arrives first is a message asking ten people to press",
+      "something that does nothing."
+    ],
+    "progress_enabled": false
   }
 }

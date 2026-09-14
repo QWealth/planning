@@ -94,6 +94,7 @@ class PlanningRoadmapStack(cdk.Stack):
         # way, so the job can be watched doing nothing before it is allowed to do
         # something. See fast/app/notifications.py.
         digest_enabled = bool(self.node.try_get_context("digest_enabled"))
+        progress_enabled = bool(self.node.try_get_context("progress_enabled"))
 
         if require_auth and not enforce_group and not allow_whole_pool:
             # Not a hypothetical footgun: this combination is a shared pool with the
@@ -146,6 +147,7 @@ class PlanningRoadmapStack(cdk.Stack):
             service_caller_arns=service_caller_arns,
             slack_secret_name=slack_secret_name,
             digest_enabled=digest_enabled,
+            progress_enabled=progress_enabled,
             env=child_env,
         )
 

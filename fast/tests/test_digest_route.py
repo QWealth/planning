@@ -31,8 +31,12 @@ class FakeSlack:
             "seen": len(self.directory),
         }
 
-    def dm(self, slack_user_id: str, text: str) -> None:
-        self.sent.append((slack_user_id, text))
+    def dm(self, slack_user_id: str, text: str, blocks=None) -> None:
+        # `blocks` mirrors slack.dm. The digest never sends any, but the double has to
+        # accept the keyword or every test through this fixture fails with a TypeError
+        # the moment another caller starts using it - which is what the progress nudge
+        # did.
+        self.sent.append((slack_user_id, text, blocks))
 
 
 @pytest.fixture

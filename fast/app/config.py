@@ -143,6 +143,24 @@ DIGEST_ENABLED = os.environ.get("DIGEST_ENABLED", "false").strip().lower() in {
     "yes",
 }
 
+# The same switch again for the Monday/Wednesday progress nudge, and deliberately a
+# SEPARATE one rather than a reuse of DIGEST_ENABLED.
+#
+# The two messages have different audiences and different risk. The digest goes only to
+# people who opted in; the nudge goes to every phase owner and DRI whether they asked or
+# not, and its buttons write to the roadmap. Turning the milestone reminders on should
+# not silently also start DMing ten people twice a week and inviting them to edit data -
+# that is a second decision and it gets a second switch.
+#
+# Off by default, for the reason above and because the button does nothing until
+# Aardvark is deployed with a handler for it. A nudge that arrives before then is a
+# message asking people to press something inert.
+PROGRESS_ENABLED = os.environ.get("PROGRESS_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
 # Logging. See the Lambda note in main.py - basicConfig alone does nothing there.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 

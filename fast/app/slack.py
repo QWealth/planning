@@ -313,15 +313,28 @@ def _as_person(member: dict) -> Optional[dict]:
     }
 
 
-def dm(slack_user_id: str, text: str) -> None:
+def dm(
+    slack_user_id: str,
+    text: str,
+    blocks: Optional[list[dict[str, Any]]] = None,
+) -> None:
     """
-    Send `text` to a person as a direct message.
+    Send a direct message, optionally as Block Kit.
 
     `chat.postMessage` accepts a user id as `channel` and opens the DM itself, so no
     `conversations.open` round trip is needed.
 
-    Raises rather than returning a flag: the caller has just created a Cognito account,
-    and "the login exists but nobody was told" is the one outcome that must never be
-    reported as success. See invites.perform_invite.
+    `text` is REQUIRED even when `blocks` is given, and is not a fallback in the "nice
+    to have" sense. It is what Slack pushes to a lock screen, a desktop toast and the
+    channel list; omit it alongside blocks and every one of those reads "This content
+    can't be displayed", so a working message looks broken before anybody opens it.
+    With blocks present, `text` is not rendered in the message body itself.
+
+    Raises rather than returning a flag: the original caller has just created a Cognito
+    account, and "the login exists but nobody was told" is the one outcome that must
+    never be reported as success. See invites.perform_invite.
     """
-    _call("chat.postMessage", body={"channel": slack_user_id, "text": text})
+    body: dict[str, Any] = {"channel": slack_user_id, "text": text}
+    if blocks is not None:
+        body["blocks"] = blocks
+    _call("chat.postMessage", body=body)

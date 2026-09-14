@@ -30,7 +30,7 @@ import logging
 from datetime import date
 from typing import Any, Optional
 
-from app import config, digest, slack
+from app import blocks, config, digest, progress, slack
 from app.db.queries import audit, people as people_q, projects as projects_q
 
 logger = logging.getLogger(__name__)
@@ -74,10 +74,18 @@ def _deliver(
     week: str,
     summary: dict[str, Any],
     dry_run: bool,
+    blocks: Optional[list[dict[str, Any]]] = None,
 ) -> None:
-    """Claim the week for `key`, then send. See the module docstring for the order."""
+    """
+    Claim the period for `key`, then send. See the module docstring for the order.
+
+    `week` is the claim's period and is not always a week: the progress nudge runs twice
+    a week and passes the DAY, so Monday's claim cannot silence Wednesday's. The name is
+    kept because the digest - the original and still the main caller - really does claim
+    by week, and renaming it to `period` at both call sites would obscure that.
+    """
     if dry_run:
-        summary["messages"].append({"email": email, "key": key, "text": text})
+        summary["messages"].append({"email": email, "key": key, "text": text, "blocks": blocks})
         return
 
     if not audit.claim_once(key, week, detail=f"{len(text)} chars"):
@@ -85,7 +93,7 @@ def _deliver(
         return
 
     try:
-        slack.dm(slack_user_id, text)
+        slack.dm(slack_user_id, text, blocks=blocks)
     except slack.SlackError as e:
         # Not re-raised: one person's DM failing must not cost everybody else theirs,
         # and this runs unattended so there is nobody to show an exception to. The week
@@ -197,6 +205,111 @@ def run_weekly_digest(
     return summary
 
 
+def run_progress_nudge(
+    today: Optional[date] = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """
+    Ask each phase owner - or the lane's DRI where nobody owns it - where their work is.
+
+    Same claim-then-send ordering as the digest, and the same reason: a retried schedule
+    that DMs somebody twice is how a bot gets muted. The claim period here is the DAY
+    rather than the week, because this runs on Monday AND Wednesday and a weekly claim
+    would let Monday's send silence Wednesday's.
+
+    THERE IS NO PER-PERSON OPT-IN, unlike the digest. That was a deliberate call: being
+    asked where your work has got to is part of owning it. The consequence is that this
+    is an unsolicited recurring DM, which is exactly what the digest's opt-in default
+    exists to avoid - so the deployment-level switch matters more here, not less.
+
+    `dry_run` composes everything, claims nothing and sends nothing, returning the
+    blocks. That is how this gets looked at in production before it is switched on.
+    """
+    today = today or date.today()
+    day = today.isoformat()
+
+    summary: dict[str, Any] = {
+        "job": "progress",
+        "today": day,
+        "dry_run": dry_run,
+        "asked": 0,
+        "sent": 0,
+        "already_sent": 0,
+        "open_phases": 0,
+        "unasked_phases": 0,
+        "no_slack_account": [],
+        "failed": [],
+        "messages": [],
+    }
+
+    rows = progress.open_phases(projects_q.list_projects())
+    summary["open_phases"] = len(rows)
+    # Counted whether or not anybody is messaged. These are the phases the nudge cannot
+    # reach at all, and a run that reported only its successes would look healthy while
+    # part of the board went unchased.
+    summary["unasked_phases"] = len(progress.unasked(rows))
+
+    grouped = progress.group_by_asker(rows)
+    summary["asked"] = len(grouped)
+    if not grouped:
+        return summary
+
+    # Project name -> id, for the button payload. Built from the same rows the message
+    # is drawn from, so the two cannot disagree about which project is which.
+    project_ids = {row["project_name"]: row["project_id"] for row in rows}
+
+    names = {
+        (person.get("email") or "").strip().lower(): person.get("name")
+        for person in people_q.list_people()
+    }
+
+    try:
+        ids = _slack_ids()
+    except slack.SlackError as e:
+        # No directory means no way to address anybody. Nothing is claimed, so the whole
+        # run stays retryable exactly as it stands.
+        summary["failed"].append({"email": "*", "error": str(e)})
+        logger.error("Progress nudge abandoned, no Slack directory: %s", e)
+        return summary
+
+    for email, bundle in grouped.items():
+        name = names.get(email)
+        body = blocks.compose_nudge(name, bundle["projects"], project_ids)
+        if body is None:
+            continue
+
+        slack_user_id = ids.get(email)
+        if not slack_user_id:
+            # Owns work on the roadmap but is not findable in Slack. Named rather than
+            # logged and forgotten: they are being asked for nothing, silently.
+            summary["no_slack_account"].append(email)
+            continue
+
+        _deliver(
+            email,
+            slack_user_id,
+            blocks.fallback_text(name, bundle["count"]),
+            f"progress#{email}",
+            day,
+            summary,
+            dry_run,
+            blocks=body,
+        )
+
+    logger.info(
+        "Progress nudge %s: %s asked, %s sent, %s already sent, %s open phases, "
+        "%s with nobody to ask, %s failed",
+        day,
+        summary["asked"],
+        summary["sent"],
+        summary["already_sent"],
+        summary["open_phases"],
+        summary["unasked_phases"],
+        len(summary["failed"]),
+    )
+    return summary
+
+
 def lambda_handler(event: Optional[dict] = None, context: Any = None) -> dict[str, Any]:
     """
     What EventBridge invokes on Monday morning. See cdk/lib/lambda_stack.py.
@@ -230,6 +343,28 @@ def lambda_handler(event: Optional[dict] = None, context: Any = None) -> dict[st
         today = digest.parse_date(event["today"])
         if today is None:
             logger.error("Ignoring unreadable 'today' in event: %r", event["today"])
+
+    # Which job this invocation is. Several schedules point at this one function - the
+    # Monday digest, the Monday/Wednesday progress nudge - because they share an image,
+    # a role and a set of table permissions, and splitting them into separate functions
+    # would mean keeping three of each in step for no gain.
+    #
+    # A scheduled event names its job explicitly; the default is the digest, so an
+    # invocation from before this dispatch existed still does what it used to.
+    job = (event.get("job") or "digest").strip().lower()
+
+    if job == "progress":
+        if not config.PROGRESS_ENABLED and not dry_run:
+            logger.info("PROGRESS_ENABLED is off; composing and sending nothing.")
+            return {"skipped": "PROGRESS_ENABLED is off", "sent": 0}
+        return run_progress_nudge(today=today, dry_run=dry_run)
+
+    if job != "digest":
+        # Named rather than silently treated as the digest. A typo in a schedule's
+        # payload would otherwise send the wrong message on the wrong day, which is
+        # worse than sending nothing and saying so.
+        logger.error("Unknown job %r; sending nothing.", job)
+        return {"skipped": f"unknown job {job!r}", "sent": 0}
 
     if not config.DIGEST_ENABLED and not dry_run:
         logger.info("DIGEST_ENABLED is off; composing and sending nothing.")

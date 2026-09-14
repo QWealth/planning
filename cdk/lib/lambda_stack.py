@@ -39,6 +39,7 @@ class LambdaStack(cdk.Stack):
         service_caller_arns: str = "",
         slack_secret_name: str = "",
         digest_enabled: bool = False,
+        progress_enabled: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -276,6 +277,12 @@ class LambdaStack(cdk.Stack):
                 # anybody has agreed to be messaged. Off means the function still runs
                 # on Monday and still logs what it WOULD have done, and sends nothing.
                 "DIGEST_ENABLED": "true" if digest_enabled else "false",
+                # The progress nudge's own switch, separate from the digest's. The
+                # two messages have different audiences and different risk: the
+                # digest goes only to people who opted in, the nudge goes to every
+                # phase owner and DRI whether they asked or not, and its buttons
+                # write to the roadmap. Turning one on must not turn the other on.
+                "PROGRESS_ENABLED": "true" if progress_enabled else "false",
                 "LOG_LEVEL": "INFO",
                 # No COGNITO_USER_POOL_ID, no SERVICE_CALLER_ARNS, no CORS_ORIGINS and
                 # no group settings: this function answers no requests and has no
@@ -319,6 +326,45 @@ class LambdaStack(cdk.Stack):
                 retry_attempts=0,
             ),
             description="Weekly milestone digest to project DRIs",
+        )
+
+        # The progress nudge, on the SAME function as the digest.
+        #
+        # One function, several schedules, told apart by the `job` in the payload. They
+        # share an image, a role and exactly the same table permissions, so a second
+        # function would be three more things to keep in step for no gain - and the
+        # image is already built once and pointed at twice (see the API function above).
+        #
+        # Twice a week rather than weekly, and 09:00 rather than the digest's 08:00.
+        # The digest is read before the day starts and says what is coming; this one
+        # asks for something back, so it lands once people are actually at a keyboard.
+        # An hour apart on Monday also keeps the two from arriving as one clump of
+        # notifications, which is how a bot stops being read.
+        #
+        # MON,WED in one schedule rather than two: the expression supports a list, and
+        # two schedules would be two places to edit the hour.
+        scheduler.Schedule(
+            self,
+            "ProgressNudgeSchedule",
+            schedule=scheduler.ScheduleExpression.cron(
+                week_day="MON,WED",
+                hour="9",
+                minute="0",
+                time_zone=cdk.TimeZone.AMERICA_TORONTO,
+            ),
+            target=scheduler_targets.LambdaInvoke(
+                self.digest_function,
+                # What tells the handler which job this is. Without it the invocation
+                # defaults to the digest, which would send milestone reminders on a
+                # Wednesday morning - see notifications.lambda_handler.
+                input=scheduler.ScheduleTargetInput.from_object({"job": "progress"}),
+                # Same reasoning as the digest's: the function swallows its own
+                # per-person failures, so a retry is a second pass over people who may
+                # already have been messaged. The per-DAY claim makes that safe and
+                # should not have to.
+                retry_attempts=0,
+            ),
+            description="Monday/Wednesday progress nudge to phase owners and DRIs",
         )
 
         cdk.CfnOutput(

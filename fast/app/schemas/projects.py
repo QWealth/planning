@@ -282,3 +282,62 @@ class AuditOut(BaseModel):
     before: Optional[dict[str, Any]] = None
     after: Optional[dict[str, Any]] = None
     user_email: str
+
+
+# ------------------------------------------------ the machine-to-machine progress write
+#
+# Used only by /api/service/phases/progress, which the Aardvark Aap Slack bot calls when
+# somebody submits the progress modal. See routes/service.py for why that door exists at
+# all and what it is allowed to do.
+
+
+class ServiceProgressItem(BaseModel):
+    """One phase's new progress."""
+
+    project_id: str = Field(min_length=1)
+    phase_id: str = Field(min_length=1)
+    # Nullable on purpose, and the same 0..1 range the human PATCH uses. Null means
+    # "back to not recorded", which has to stay expressible: somebody who set 40% by
+    # mistake needs a way to say nobody actually knows, and 0% is a different claim.
+    progress: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+class ServiceProgressIn(BaseModel):
+    """
+    A batch of progress updates, made on one person's behalf.
+
+    `actor_email` is who the audit trail will name, and the API takes the caller's word
+    for it - which is a real widening of what the service door does. /api/service/invite
+    deliberately attributes to `service:<RoleName>` because it genuinely cannot know
+    which Slack admin typed the command. Here the caller CAN know: the nudge is a DM to
+    one person and Slack's payload names them, so recording `service:` instead would be
+    throwing away a fact we hold. The trade is that a compromised bot could attribute an
+    edit to anybody; the mitigation is that reaching this route at all needs both the
+    IAM grant and the role allowlist.
+    """
+
+    actor_email: str = Field(min_length=3, max_length=254)
+    # Capped rather than unbounded: this is one person's open phases, and the largest
+    # holder on the current board has thirteen. A request carrying hundreds is a bug or
+    # an abuse, and either way is better refused at the edge than written.
+    updates: list[ServiceProgressItem] = Field(min_length=1, max_length=50)
+
+    @field_validator("actor_email")
+    @classmethod
+    def _normalise(cls, value: str) -> str:
+        """Lowercased, like every other address this API stores or compares."""
+        cleaned = value.strip().lower()
+        if "@" not in cleaned:
+            raise ValueError("actor_email must be an email address")
+        return cleaned
+
+
+class ServiceProgressOut(BaseModel):
+    """What actually happened, per phase rather than in aggregate."""
+
+    actor_email: str
+    updated: int
+    # Named, not counted. A phase that could not be written - deleted between the DM and
+    # the submit, most likely - is something the person should be told about by name,
+    # because their answer to that question has just been lost.
+    missing: list[str] = []
