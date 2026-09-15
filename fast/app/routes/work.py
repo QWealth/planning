@@ -34,7 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from app import work as vocab
 from app.auth import is_admin, require_planning_group
 from app.db.models import AuditLogModel
-from app.db.queries import audit, work as q
+from app.db.queries import audit, people as people_q, work as q
 from app.schemas.projects import AuditOut
 from app.schemas.work import (
     CommentCreate,
@@ -201,6 +201,28 @@ async def rfc_history(
 ) -> list[dict[str, Any]]:
     """Every recorded change to this RFC, newest first."""
     return audit.history(item_id, limit=limit)
+
+
+@router.post("/{item_id}/read", status_code=status.HTTP_204_NO_CONTENT)
+async def mark_rfc_read(
+    item_id: str,
+    user_email: str = Depends(require_planning_group),
+) -> None:
+    """
+    Note that the caller has opened this RFC, so the list can stop highlighting it.
+
+    NOT AUDITED, unlike every other write in this file. The audit trail answers "what
+    did somebody change and why", and reading is neither - recording it would add a row
+    per person per RFC per visit, burying the handful of entries that describe actual
+    decisions under thousands that describe attention.
+
+    A person with no roster row is a real state rather than an error: being in the
+    planning group is what grants access, and the roster is a separate list somebody
+    fills in later. They simply have nowhere to store the mark, so everything stays
+    highlighted for them - which is honest, and fixes itself the moment they are added.
+    """
+    _rfc_or_404(item_id)
+    people_q.mark_rfc_read(user_email, item_id)
 
 
 # ---------------------------------------------------------------------- comments

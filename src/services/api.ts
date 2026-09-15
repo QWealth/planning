@@ -598,6 +598,17 @@ export async function deleteRfc(itemId: string): Promise<void> {
   await apiClient.delete(`/rfcs/${encodeURIComponent(itemId)}`);
 }
 
+/**
+ * Note that the signed-in person has opened this RFC.
+ *
+ * Fire-and-forget at the call site: the reader is already on screen by the time this
+ * runs, and a failed read-receipt must never turn a document somebody is reading into
+ * an error. The worst case is the row stays highlighted and they open it again.
+ */
+export async function markRfcRead(itemId: string): Promise<void> {
+  await apiClient.post(`/rfcs/${encodeURIComponent(itemId)}/read`);
+}
+
 /* --------------------------------------------------------------- comments -- */
 
 /**

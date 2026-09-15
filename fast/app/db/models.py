@@ -416,6 +416,17 @@ class PersonModel:
             "roles": PersonModel._roles(item),
             "active": item.get("active", True),
             "specialisations": PersonModel._specialisations(item),
+            # When this person last opened each RFC: {item_id: ISO timestamp}.
+            #
+            # A timestamp rather than a set of ids, because it costs the same and
+            # answers a second question the ids cannot: whether the document has
+            # been edited since they read it. Only "never opened" is drawn today.
+            #
+            # Defaults to {} rather than None so every caller can index it without
+            # a guard - a person who has read nothing and a person created before
+            # this existed are the same thing, unlike the absent-vs-null cases
+            # elsewhere in this file.
+            "rfcs_read": item.get("rfcs_read") or {},
             # The Monday digest settings, defaulted the same way and for the same
             # reason. Absent means off: this feature sends a DM to a colleague, so a
             # row that has never expressed a preference must not be taken as consent.
@@ -558,6 +569,7 @@ class RfcModel:
         owner_email: Optional[str] = None,
         decided_on: Optional[str] = None,
         created_by: Optional[str] = None,
+        skills: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Build an RFC item. `decided_on` is an ISO day string, or None."""
         now = _now()
@@ -572,6 +584,15 @@ class RfcModel:
             "owner_email": owner_email,
             "decided_on": decided_on,
             "created_by": created_by,
+            # Who this proposal wants in the room, by capability rather than by name.
+            # Names go stale as people move around; "this is a back-end decision" does
+            # not, and the roster already records who holds what.
+            "skills": skills or [],
+            # When it became open for comment, which is when chasing starts counting
+            # from. Stored rather than derived from the audit trail: audit writes are
+            # best-effort and swallow their own errors, so a missing row would make the
+            # chase either never start or never stop, with nothing to show why.
+            "review_since": now if status == RfcStatus.REVIEW.value else None,
             "created_at": now,
             "updated_at": now,
         }
@@ -589,6 +610,10 @@ class RfcModel:
             "owner_email": item.get("owner_email") or None,
             "decided_on": item.get("decided_on") or None,
             "created_by": item.get("created_by") or None,
+            # [] rather than None for the same reason `body` defaults to "": there is no
+            # useful difference between "tagged with nothing" and "nobody has tagged it".
+            "skills": item.get("skills") or [],
+            "review_since": item.get("review_since") or None,
             "created_at": item.get("created_at"),
             "updated_at": item.get("updated_at"),
         }

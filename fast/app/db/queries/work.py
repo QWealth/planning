@@ -30,6 +30,7 @@ A parent's status is deliberately NOT derived from its children - see app/work.p
 
 import logging
 import uuid
+from datetime import datetime
 from typing import Any, Optional
 
 import boto3
@@ -40,11 +41,17 @@ from app import config
 from app.db.models import COMMENT_SK_PREFIX, WORK_SK, CommentModel, RfcModel, TaskModel
 from app.db.queries._updates import ValidationError, apply_update
 from app.db.queries._updates import iso as _iso
-from app.work import Kind
+from app.work import Kind, RfcStatus
 
 logger = logging.getLogger(__name__)
 
 dynamodb = boto3.resource("dynamodb", region_name=config.AWS_REGION)
+
+
+def _now_iso() -> str:
+    """Same shape as the models write, so the two cannot disagree on format."""
+    return datetime.utcnow().isoformat()
+
 
 # Fields a caller may change, per kind. Allowlists rather than "whatever is in the
 # dict", same reasoning as PROJECT_UPDATABLE: these arrive from Pydantic models
@@ -54,7 +61,20 @@ dynamodb = boto3.resource("dynamodb", region_name=config.AWS_REGION)
 # `kind` is absent from both on purpose. An RFC does not become a task; that is a
 # different document with a different lifecycle, and allowing the flip would leave
 # rows carrying fields their new kind has no meaning for.
-RFC_UPDATABLE = {"title", "body", "status", "project_id", "owner_email", "decided_on"}
+# `review_since` is deliberately absent. It is not an editable property of the
+# document, it is a record of when the document entered a state - so it is set by
+# update_rfc below when the transition actually happens, and a caller cannot move it.
+# Letting one be sent would make "how long has this been waiting" a thing anybody could
+# answer differently, which is the whole value of chasing from it.
+RFC_UPDATABLE = {
+    "title",
+    "body",
+    "status",
+    "project_id",
+    "owner_email",
+    "decided_on",
+    "skills",
+}
 
 # Only the text. `author_email` and `created_at` are absent deliberately and are the
 # reason this is an allowlist rather than a blocklist: a comment whose author can be
@@ -263,6 +283,7 @@ def create_rfc(rfc: dict[str, Any]) -> dict[str, Any]:
         owner_email=rfc.get("owner_email"),
         decided_on=_iso(rfc.get("decided_on")),
         created_by=rfc.get("created_by"),
+        skills=rfc.get("skills"),
     )
     try:
         get_work_table().put_item(Item=item)
@@ -298,15 +319,55 @@ def create_task(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def update_rfc(item_id: str, changes: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Update an RFC. `changes` holds only fields the caller actually sent."""
-    if not changes:
-        return get_rfc(item_id)
-    if get_rfc(item_id) is None:
+    """
+    Update an RFC. `changes` holds only fields the caller actually sent.
+
+    Moving INTO `review` stamps `review_since`, and moving out of it clears it. That
+    stamp is what the daily chase counts its five working days from, so it has to mean
+    "this became open for comment then" rather than "somebody touched the row then" -
+    `updated_at` moves on every edit and would restart the clock each time the author
+    fixed a typo.
+
+    Re-entering review after being withdrawn restarts the clock, deliberately: it is a
+    fresh ask of people's attention, and chasing that lands on day six of a period
+    nobody was told about is worse than chasing for five days again.
+    """
+    before = get_rfc(item_id)
+    if before is None:
         return None
+    if not changes:
+        return before
+
+    # Refused loudly rather than dropped quietly, matching apply_update and
+    # update_person: a caller sending a field it may not set has misunderstood
+    # something, and silently ignoring it lets that misunderstanding persist.
+    #
+    # The check is here rather than in the allowlist because the allowlist is widened
+    # below so that THIS function can write the stamp. Without this line, widening it
+    # would hand the same power to every caller.
+    if "review_since" in changes:
+        raise ValueError(
+            "cannot update: review_since is set when the status moves into review"
+        )
+
+    status = changes.get("status")
+    if status is not None and status != before["status"]:
+        if status == RfcStatus.REVIEW.value:
+            changes = {**changes, "review_since": _now_iso()}
+        elif before["status"] == RfcStatus.REVIEW.value:
+            # Left review. Nothing should be chased about it any more, and a stale
+            # timestamp would be a fact on the row that nothing reads correctly.
+            changes = {**changes, "review_since": None}
 
     try:
         item = apply_update(
-            get_work_table(), _key(item_id), changes, RFC_UPDATABLE, "item_id"
+            get_work_table(),
+            _key(item_id),
+            changes,
+            # review_since is added to the allowlist HERE rather than to RFC_UPDATABLE,
+            # so it is writable only on the path above that computes it.
+            RFC_UPDATABLE | {"review_since"},
+            "item_id",
         )
     except ValidationError as e:
         if str(e) == "no such record":

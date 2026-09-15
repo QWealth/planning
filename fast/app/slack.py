@@ -178,6 +178,17 @@ def _explain(code: str, method: str) -> str:
     everything else, because a scope is missing from one method.
     """
     known = {
+        "not_in_channel": (
+            "The Slack app is not a member of that channel. Invite it - type "
+            "`/invite @Aardvark` in the channel itself. Having `chat:write` lets it "
+            "post to channels it has been invited to, not to every channel."
+        ),
+        "channel_not_found": (
+            "No such Slack channel. RFC_REVIEW_CHANNEL must be a channel ID (the C… "
+            "value from the channel's 'Copy link'), not a #name - a name is resolved "
+            "server-side in a way that depends on scopes this app does not have."
+        ),
+        "is_archived": "That Slack channel is archived, so nothing can be posted to it.",
         "missing_scope": (
             "The Slack app is missing a permission. Listing people needs `users:read`, "
             "reading their addresses needs `users:read.email`, and sending the "
@@ -334,7 +345,27 @@ def dm(
     account, and "the login exists but nobody was told" is the one outcome that must
     never be reported as success. See invites.perform_invite.
     """
-    body: dict[str, Any] = {"channel": slack_user_id, "text": text}
+    post(slack_user_id, text, blocks=blocks)
+
+
+def post(
+    channel: str,
+    text: str,
+    blocks: Optional[list[dict[str, Any]]] = None,
+) -> None:
+    """
+    Post to a channel, or to a person - `chat.postMessage` does not distinguish.
+
+    A user id opens the DM itself; a channel id posts to the channel. The only real
+    difference is the permission: posting into a channel requires the app to have been
+    INVITED to it, and the failure when it has not is `not_in_channel`, which says
+    nothing about who needs to do what. See _explain.
+
+    `dm` stays as the name for the person case because the call sites read better for
+    it, and because "send this to a colleague" and "announce this in public" are worth
+    keeping visibly different at the point of use.
+    """
+    body: dict[str, Any] = {"channel": channel, "text": text}
     if blocks is not None:
         body["blocks"] = blocks
     _call("chat.postMessage", body=body)

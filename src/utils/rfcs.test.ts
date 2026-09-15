@@ -12,6 +12,8 @@ function rfc(over: Partial<Rfc> = {}): Rfc {
     status: 'draft',
     project_id: null,
     owner_email: null,
+    skills: [],
+    review_since: null,
     decided_on: null,
     created_by: null,
     created_at: null,

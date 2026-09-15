@@ -220,6 +220,19 @@ export interface Person {
   digest_enabled: boolean;
   digest_days: number;
   digest_admin_report: boolean;
+  /**
+   * When this person last opened each RFC: `{ item_id: ISO timestamp }`.
+   *
+   * Server-side and per person, rather than localStorage. "Never opened" is a fact
+   * about someone, not about a browser - keeping it locally would mark everything
+   * unread again on a new laptop, or after clearing site data, which is precisely
+   * when somebody is least able to tell that the highlight is lying to them.
+   *
+   * Not writable through patchPerson: it is a map, so an allowlisted PATCH would
+   * take a whole new one and a stray `{}` would silently mark everything unread.
+   * markRfcRead is the only way in, and it only ever adds a key.
+   */
+  rfcs_read: Record<string, string>;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -455,6 +468,23 @@ export interface Rfc {
   status: string;
   project_id: string | null;
   owner_email: string | null;
+  /**
+   * Skill values from the vocabulary - who this proposal wants in the room.
+   *
+   * By capability rather than by name, because names go stale as people move around
+   * and "this is a back-end decision" does not. The roster already records who holds
+   * what, so the audience is derived rather than maintained.
+   */
+  skills: string[];
+  /**
+   * When it became open for comment, or null.
+   *
+   * READ-ONLY. Set by the API when the status moves into `review` and cleared when it
+   * moves out, never accepted from a client - it is what the daily chase counts its
+   * five working days from, so "how long has this been waiting" must not be a thing
+   * anybody can answer differently.
+   */
+  review_since: string | null;
   /** The day it was accepted or rejected. Null while it is still open. */
   decided_on: string | null;
   created_by: string | null;
@@ -618,6 +648,14 @@ export interface RfcPatch {
   project_id?: string | null;
   owner_email?: string | null;
   decided_on?: string | null;
+  /**
+   * Always sent whole when it changes, never as a delta.
+   *
+   * Unlike project_id and decided_on above, there is no absent-versus-null distinction
+   * to preserve here: skills are a set, and `[]` is the real, storable answer for
+   * "tagged with nothing" rather than a way of saying "leave it alone".
+   */
+  skills?: string[];
 }
 
 /**
@@ -711,6 +749,8 @@ export interface RfcCreate {
   project_id?: string | null;
   owner_email?: string | null;
   decided_on?: string | null;
+  /** Skill values from the vocabulary. Omitted means none. */
+  skills?: string[];
 }
 
 /**

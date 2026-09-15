@@ -28,6 +28,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.skills import Skill
 from app.work import RfcStatus, TaskStatus
 
 # The date fields below are `decided_on` and `due`, never `date`, and the import
@@ -65,6 +66,16 @@ class RfcBase(BaseModel):
     project_id: Optional[str] = None
     owner_email: Optional[str] = None
     decided_on: Optional[ISODate] = None
+    # Who this proposal wants in the room, by capability rather than by name.
+    #
+    # Validated against the Skill enum, so a typo is a 422 naming the field rather than
+    # a tag that matches nobody - which would be invisible, because "nobody holds that
+    # skill" and "that skill does not exist" produce the same silence in the chase.
+    #
+    # Capped well above the eleven that exist: tagging every skill is not a sensible
+    # thing to do but it is not worth refusing, and the cap is only here so a caller
+    # cannot post a megabyte of duplicates.
+    skills: list[Skill] = Field(default_factory=list, max_length=20)
 
 
 class RfcCreate(RfcBase):
@@ -80,6 +91,7 @@ class RfcUpdate(BaseModel):
     project_id: Optional[str] = None
     owner_email: Optional[str] = None
     decided_on: Optional[ISODate] = None
+    skills: Optional[list[Skill]] = Field(default=None, max_length=20)
 
     def changes(self) -> dict[str, Any]:
         """Only the fields the caller actually sent. See the module docstring."""
@@ -97,6 +109,10 @@ class RfcOut(BaseModel):
     project_id: Optional[str] = None
     owner_email: Optional[str] = None
     decided_on: Optional[ISODate] = None
+    skills: list[str] = Field(default_factory=list)
+    # When it became open for comment. Read-only: set by the queries layer on the
+    # transition, never accepted from a caller - see RFC_UPDATABLE.
+    review_since: Optional[str] = None
     created_by: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None

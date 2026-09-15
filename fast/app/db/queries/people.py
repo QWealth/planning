@@ -180,3 +180,64 @@ def delete_person(email: str) -> bool:
         logger.error("Error deleting person %s: %s", email, e)
         raise
     return bool(response.get("Attributes"))
+
+
+def mark_rfc_read(email: str, item_id: str) -> Optional[dict[str, Any]]:
+    """
+    Record that this person has opened this RFC, now.
+
+    DELIBERATELY NOT REACHABLE THROUGH update_person
+    ------------------------------------------------
+    `rfcs_read` is absent from PERSON_UPDATABLE, so a PATCH cannot touch it. That is
+    not caution for its own sake: the field is a MAP, and an allowlisted PATCH would
+    take a whole new map, so one careless caller sending `{}` would silently mark every
+    RFC unread for that person with no error and nothing to notice. The only write is
+    this one, and it only ever adds a single key.
+
+    Two DynamoDB calls rather than one, and the reason is the nested update. A
+    `SET rfcs_read.#id = :ts` fails outright when the person has no `rfcs_read`
+    attribute yet - which is every person until the first time they open anything - and
+    the expression language has no way to create the parent and set the child in one
+    statement. So the parent is created first if it is missing, then the key is set.
+
+    The race that leaves is two RFCs opened in the same instant losing one mark. Worth
+    naming and not worth solving: the loser shows as unread, the person opens it again,
+    and it is correct from then on. The alternative - read, merge, write the whole map -
+    has a strictly worse race, because it would overwrite marks rather than drop one.
+    """
+    email = email.strip().lower()
+    table = get_people_table()
+    now = datetime.utcnow().isoformat()
+
+    try:
+        # Create the map only if it is not there. Separate from the write below so the
+        # write can address a single key rather than replacing the whole attribute.
+        table.update_item(
+            Key={"email": email},
+            UpdateExpression="SET #r = if_not_exists(#r, :empty)",
+            ExpressionAttributeNames={"#r": "rfcs_read"},
+            ExpressionAttributeValues={":empty": {}},
+            ConditionExpression="attribute_exists(email)",
+        )
+        response = table.update_item(
+            Key={"email": email},
+            UpdateExpression="SET #r.#id = :now, #updated_at = :now",
+            ExpressionAttributeNames={
+                "#r": "rfcs_read",
+                # Aliased because an item_id is caller-supplied and could collide with
+                # a reserved word; it costs nothing to never have to think about it.
+                "#id": item_id,
+                "#updated_at": "updated_at",
+            },
+            ExpressionAttributeValues={":now": now},
+            ConditionExpression="attribute_exists(email)",
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # Not on the roster. Reading an RFC is not gated on having a row, so this
+            # is a real state rather than an error - see the route.
+            return None
+        logger.error("Error marking RFC %s read for %s: %s", item_id, email, e)
+        raise
+    return PersonModel.from_item(response.get("Attributes", {}))

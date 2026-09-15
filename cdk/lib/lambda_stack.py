@@ -40,6 +40,8 @@ class LambdaStack(cdk.Stack):
         slack_secret_name: str = "",
         digest_enabled: bool = False,
         progress_enabled: bool = False,
+        rfc_chase_enabled: bool = False,
+        rfc_review_channel: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -283,6 +285,14 @@ class LambdaStack(cdk.Stack):
                 # phase owner and DRI whether they asked or not, and its buttons
                 # write to the roadmap. Turning one on must not turn the other on.
                 "PROGRESS_ENABLED": "true" if progress_enabled else "false",
+                # The third switch, and the one guarding the loudest thing this function
+                # does: naming colleagues in a public channel, daily. Nothing about that
+                # should start as a side effect of turning the other two on.
+                "RFC_CHASE_ENABLED": "true" if rfc_chase_enabled else "false",
+                # A channel ID, not a name, and empty means the chase refuses to run.
+                # See config.RFC_REVIEW_CHANNEL - the app must also have been invited to
+                # the channel, which is not something a deploy can do.
+                "RFC_REVIEW_CHANNEL": rfc_review_channel,
                 "LOG_LEVEL": "INFO",
                 # No COGNITO_USER_POOL_ID, no SERVICE_CALLER_ARNS, no CORS_ORIGINS and
                 # no group settings: this function answers no requests and has no
@@ -365,6 +375,34 @@ class LambdaStack(cdk.Stack):
                 retry_attempts=0,
             ),
             description="Monday/Wednesday progress nudge to phase owners and DRIs",
+        )
+
+        # The RFC read-chase, weekday mornings.
+        #
+        # MON-FRI rather than daily, because the chase counts in WORKING days and stops
+        # after five of them - a weekend post would be noise nobody is there to act on
+        # while spending none of the budget it appears to spend.
+        #
+        # 09:30 puts it after the progress nudge rather than alongside it. Two bot
+        # messages arriving together read as one interruption and the second is the one
+        # that gets skimmed; half an hour apart they are two things.
+        scheduler.Schedule(
+            self,
+            "RfcChaseSchedule",
+            schedule=scheduler.ScheduleExpression.cron(
+                week_day="MON-FRI",
+                hour="9",
+                minute="30",
+                time_zone=cdk.TimeZone.AMERICA_TORONTO,
+            ),
+            target=scheduler_targets.LambdaInvoke(
+                self.digest_function,
+                input=scheduler.ScheduleTargetInput.from_object({"job": "rfc-chase"}),
+                # Same reasoning as the other two: the run claims the day before it
+                # posts, so a retry cannot double-post, and it should not have to.
+                retry_attempts=0,
+            ),
+            description="Daily #request_for_comments chase for unread RFCs",
         )
 
         cdk.CfnOutput(

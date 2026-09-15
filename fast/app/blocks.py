@@ -187,3 +187,87 @@ def fallback_text(name: Optional[str], count: int) -> str:
     who = f"{name}, you" if name else "You"
     phases = "phase" if count == 1 else "phases"
     return f"{who} have {count} open {phases} to update on the roadmap."
+
+
+# --------------------------------------------------------------- the review chase
+#
+# The daily post to #request_for_comments. A channel message rather than a DM, so it is
+# drawn to be readable by people it does NOT name as well as by those it does - somebody
+# scrolling past should be able to see which proposals are waiting and for how long,
+# without having to work out whether they are being asked for something.
+
+
+def chase_line(entry: dict[str, Any], mentions: list[str], app_url: str) -> str:
+    """
+    One RFC's line: what it is, who it is waiting on, and how long it has left.
+
+    The remaining days are stated because the chase stops after a working week, and a
+    reminder that will silently give up is worse than one that says so - "two days left"
+    is actionable in a way that an indefinite nag stops being by about day three.
+    """
+    skills = ", ".join(entry["skills"])
+    left = entry["days_left"]
+    when = "last day" if left <= 0 else f"{left} working day{'' if left == 1 else 's'} left"
+    link = f"{app_url}/rfcs/{entry['item_id']}"
+    who = " ".join(mentions) if mentions else "_nobody findable in Slack_"
+    return f"*<{link}|{entry['title']}>*\n{skills} · {when}\n{who}"
+
+
+def compose_chase(
+    entries: list[dict[str, Any]],
+    mentions_for: dict[str, list[str]],
+    app_url: str,
+) -> Optional[list[dict[str, Any]]]:
+    """
+    The whole post, or None when nothing is outstanding.
+
+    None rather than "all clear", deliberately. A daily message into a channel saying
+    there is nothing to do is the fastest way to make the channel muted, and a quiet
+    channel already says it.
+
+    `mentions_for` maps item_id to the already-resolved `<@U…>` strings, so this stays
+    free of the email-to-Slack-id join and can be asserted on directly.
+    """
+    if not entries:
+        return None
+
+    proposals = "proposal" if len(entries) == 1 else "proposals"
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{len(entries)} {proposals} waiting on a read"},
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        "You are named because you hold one of the skills the proposal is "
+                        "tagged with and have not opened it yet. Opening it is enough to "
+                        "stop the reminder."
+                    ),
+                }
+            ],
+        },
+        {"type": "divider"},
+    ]
+
+    for entry in entries:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": chase_line(entry, mentions_for.get(entry["item_id"], []), app_url),
+                },
+            }
+        )
+
+    return blocks
+
+
+def chase_fallback(entries: list[dict[str, Any]]) -> str:
+    """The notification line. Names nothing - the channel list is enough on a badge."""
+    proposals = "proposal" if len(entries) == 1 else "proposals"
+    return f"{len(entries)} {proposals} on the roadmap still need a read."

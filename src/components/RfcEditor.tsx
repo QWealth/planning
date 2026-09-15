@@ -44,7 +44,7 @@ import {
   SecondaryButton,
   Select,
 } from '../styles/ui';
-import type { Project, Rfc, RfcPatch, StatusInfo } from '../types';
+import type { Project, Rfc, RfcPatch, SkillInfo, StatusInfo } from '../types';
 import { projectOptions } from '../utils/projects';
 import Markdown from './Markdown';
 
@@ -57,6 +57,15 @@ interface FormValues {
   /** `YYYY-MM-DD`, or '' for "still open". '' is the null. */
   decided_on: string;
   body: string;
+  /**
+   * Skill values from the vocabulary - who this proposal wants in the room.
+   *
+   * Registered as a group of checkboxes sharing one name, so react-hook-form collects
+   * the checked values into this array. That means `dirtyFields.skills` is an array of
+   * booleans rather than a single boolean, which is why buildRfcPatch's `dirty`
+   * parameter is typed loosely - see the note there.
+   */
+  skills: string[];
 }
 
 const Form = styled.form`
@@ -123,7 +132,10 @@ const Spacer = styled.div`
  */
 export function buildRfcPatch(
   values: FormValues,
-  dirty: Partial<Record<keyof FormValues, boolean>>
+  // `unknown` rather than `boolean`, and that is not laziness. React Hook Form reports
+  // a dirty checkbox GROUP as an array of booleans, so typing this as boolean would be
+  // a lie the compiler happily accepts and nobody notices until skills stop saving.
+  dirty: Partial<Record<keyof FormValues, unknown>>
 ): RfcPatch {
   const patch: RfcPatch = {};
   if (dirty.title) {
@@ -149,19 +161,87 @@ export function buildRfcPatch(
   if (dirty.decided_on) {
     patch.decided_on = values.decided_on || null;
   }
+  if (dirty.skills) {
+    // Always sent whole. Skills are a set rather than a field with a value, so there
+    // is no "cleared versus untouched" distinction to preserve - an empty array means
+    // "tagged with nothing", which is a real and storable answer.
+    patch.skills = values.skills ?? [];
+  }
   return patch;
 }
+
+/*
+  The skill picker: checkboxes drawn as chips.
+
+  Real checkboxes rather than buttons with state, because react-hook-form collects a
+  group sharing one name into an array for free, and because a checkbox is already
+  keyboard-operable and announced correctly. The input is visually hidden rather than
+  `display: none` - the latter removes it from the tab order and from the accessibility
+  tree, which would leave the chips unreachable without a mouse.
+*/
+const SkillGrid = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+`;
+
+const SkillChip = styled.label`
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid ${palette.border};
+  border-radius: ${radius.pill};
+  font-size: 12px;
+  color: ${palette.inkSoft};
+  cursor: pointer;
+  user-select: none;
+
+  input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+  }
+
+  &:hover {
+    border-color: ${palette.borderStrong};
+  }
+
+  &:has(input:checked) {
+    background: ${palette.blush};
+    border-color: ${palette.deepMagenta};
+    color: ${palette.deepMagenta};
+    font-weight: 700;
+  }
+
+  /* Focus lives on the hidden input, so the ring has to be drawn by the label. */
+  &:has(input:focus-visible) {
+    outline: 2px solid ${palette.hotPink};
+    outline-offset: 2px;
+  }
+`;
 
 export interface RfcEditorProps {
   /** null to write a new one. */
   rfc: Rfc | null;
   projects: readonly Project[];
   statuses: readonly StatusInfo[];
+  /** The skill vocabulary, served rather than hardcoded - see getSkills. */
+  skills: readonly SkillInfo[];
   onSaved: (rfc: Rfc) => void;
   onCancel: () => void;
 }
 
-export default function RfcEditor({ rfc, projects, statuses, onSaved, onCancel }: RfcEditorProps) {
+export default function RfcEditor({
+  rfc,
+  projects,
+  statuses,
+  skills,
+  onSaved,
+  onCancel,
+}: RfcEditorProps) {
   const [error, setError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
 
@@ -180,6 +260,7 @@ export default function RfcEditor({ rfc, projects, statuses, onSaved, onCancel }
       owner_email: rfc?.owner_email ?? '',
       decided_on: rfc?.decided_on ?? '',
       body: rfc?.body ?? '',
+      skills: rfc?.skills ?? [],
     },
   });
 
@@ -198,6 +279,7 @@ export default function RfcEditor({ rfc, projects, statuses, onSaved, onCancel }
             status: values.status,
             project_id: values.project_id || null,
             owner_email: values.owner_email.trim() || null,
+            skills: values.skills ?? [],
             decided_on: values.decided_on || null,
           })
         );
@@ -267,6 +349,24 @@ export default function RfcEditor({ rfc, projects, statuses, onSaved, onCancel }
           Decided on
           <Input type="date" {...register('decided_on')} />
           <Hint>Blank while it is still open.</Hint>
+        </Label>
+
+        <Label as="div">
+          <span>Skills</span>
+          <SkillGrid>
+            {skills.map((entry) => (
+              <SkillChip key={entry.skill} title={entry.description}>
+                <input type="checkbox" value={entry.skill} {...register('skills')} />
+                {entry.label}
+              </SkillChip>
+            ))}
+          </SkillGrid>
+          {/* Says what tagging actually causes, because it is not cosmetic: it decides
+              who gets named in #request_for_comments once this is open for comment. */}
+          <Hint>
+            Who should read this. Anyone holding one of these is asked in Slack each
+            weekday until they open it, for a working week after it moves to In review.
+          </Hint>
         </Label>
       </Fields>
 

@@ -161,6 +161,28 @@ PROGRESS_ENABLED = os.environ.get("PROGRESS_ENABLED", "false").strip().lower() i
     "yes",
 }
 
+# Where the daily "these RFCs still need reading" post goes, and whether it goes at all.
+#
+# A channel ID (C…), not a name. chat.postMessage accepts "#name" but resolves it
+# server-side in a way that has been deprecated for years and fails differently
+# depending on the app's scopes; an ID is stable and cannot be ambiguous. The app must
+# also have been INVITED to the channel - being able to post is not the same as being
+# a member, and the error when it is not says `not_in_channel` and nothing else.
+#
+# Empty by default, and the chase refuses to run without it rather than guessing at a
+# channel. Posting a list of colleagues who owe a review into the wrong room is not a
+# mistake worth risking to save a deploy.
+RFC_REVIEW_CHANNEL = os.environ.get("RFC_REVIEW_CHANNEL", "").strip()
+
+# Its own switch again, and for a sharper reason than the other two. This one names
+# real people in a public channel every day. Nothing about that should start happening
+# as a side effect of turning something else on.
+RFC_CHASE_ENABLED = os.environ.get("RFC_CHASE_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
 # Logging. See the Lambda note in main.py - basicConfig alone does nothing there.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 

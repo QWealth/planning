@@ -13,6 +13,7 @@ function person(overrides: Partial<PersonWorkload> = {}): PersonWorkload {
     digest_enabled: false,
     digest_days: 14,
     digest_admin_report: false,
+    rfcs_read: {},
     created_at: null,
     updated_at: null,
     dri_project_ids: [],

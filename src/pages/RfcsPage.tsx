@@ -30,7 +30,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import styled from 'styled-components';
 
-import { describeError, getRfcStatuses, getRfcs, getRoadmap } from '../services/api';
+import { useIdentity } from '../components/AppShell';
+import { describeError, getPerson, getRfcStatuses, getRfcs, getRoadmap } from '../services/api';
 import { palette, radius } from '../styles/theme';
 import { Chip, ErrorText, Hint, Panel, PrimaryButton, ToggleButton } from '../styles/ui';
 import type { Project, Rfc, StatusInfo } from '../types';
@@ -78,11 +79,23 @@ const List = styled.ul`
   clickable title is a target people aim at and miss; making the row the anchor also
   gives it a single focus stop instead of two.
 */
-const Row = styled(Link)`
+/*
+  A row, with an accent down the left edge when this reader has never opened it.
+
+  A border rather than a background wash, because the row already uses background to
+  mean hover and a second meaning on the same property makes "unread" and "the cursor
+  is here" indistinguishable while the mouse is moving.
+
+  Transient (`$`-prefixed) so styled-components v6 strips it before the DOM - a bare
+  `unread` prop reaches the anchor element and React warns on every render. Same
+  reasoning as StatusChip's `$closed` below.
+*/
+const Row = styled(Link)<{ $unread: boolean }>`
   display: block;
   text-decoration: none;
   color: inherit;
-  border: 1px solid ${palette.border};
+  border: 1px solid ${(p) => (p.$unread ? palette.deepMagenta : palette.border)};
+  border-left-width: ${(p) => (p.$unread ? '4px' : '1px')};
   border-radius: ${radius.md};
   background: ${palette.card};
   padding: 10px 14px;
@@ -106,10 +119,10 @@ const RowHead = styled.div`
   flex-wrap: wrap;
 `;
 
-const RowTitle = styled.span`
+const RowTitle = styled.span<{ $unread: boolean }>`
   font-weight: 700;
   font-size: 14px;
-  color: ${palette.ink};
+  color: ${(p) => (p.$unread ? palette.deepMagenta : palette.ink)};
 `;
 
 const Summary = styled.p`
@@ -161,24 +174,47 @@ export default function RfcsPage() {
   const [error, setError] = useState<string | null>(null);
   const [showClosed, setShowClosed] = useState(false);
 
+  const identity = useIdentity();
+  const email = identity?.email ?? null;
+  /*
+    Which RFCs this reader has opened, from their own roster row.
+
+    Null until it is known, and that matters: defaulting to `{}` would paint every
+    row as unread for the moment between first paint and the roster arriving, so the
+    list would flash entirely dark pink on every visit. Null means "do not highlight
+    anything yet".
+  */
+  const [read, setRead] = useState<Record<string, string> | null>(null);
+
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [documents, vocabulary, roadmap] = await Promise.all([
+      const [documents, vocabulary, roadmap, person] = await Promise.all([
         getRfcs(),
         getRfcStatuses(),
         getRoadmap(true),
+        /*
+          The reader's own roster row, for rfcs_read. Failure is swallowed to an empty
+          map rather than propagated: being in the planning group is what grants access
+          and the roster is a separate list, so somebody who has not been added yet has
+          no row and would otherwise get an error page instead of the RFC list. They
+          simply see nothing highlighted.
+        */
+        email
+          ? getPerson(email).catch(() => null)
+          : Promise.resolve(null),
       ]);
       setRfcs(documents);
       setStatuses(vocabulary);
       setProjects(roadmap.projects);
+      setRead(person?.rfcs_read ?? {});
     } catch (err) {
       setError(describeError(err));
       // An empty list rather than null, so the page renders its empty state instead
       // of sitting on "Loading…" for ever next to an error nobody can act on.
       setRfcs([]);
     }
-  }, []);
+  }, [email]);
 
   useEffect(() => {
     void load();
@@ -271,11 +307,18 @@ export default function RfcsPage() {
               {group.rfcs.map((rfc) => {
                 const entry = vocabulary.get(rfc.status);
                 const summary = rfcSummary(rfc.body);
+                // Never opened by this reader. `read === null` means the roster row has
+                // not arrived, and nothing is highlighted until it has.
+                const unread = read !== null && !(rfc.item_id in read);
                 return (
                   <li key={rfc.item_id}>
-                    <Row to={`/rfcs/${encodeURIComponent(rfc.item_id)}`}>
+                    <Row
+                      to={`/rfcs/${encodeURIComponent(rfc.item_id)}`}
+                      $unread={unread}
+                      aria-label={unread ? `${rfc.title} (unread)` : undefined}
+                    >
                       <RowHead>
-                        <RowTitle>{rfc.title}</RowTitle>
+                        <RowTitle $unread={unread}>{rfc.title}</RowTitle>
                         <StatusChip
                           $closed={Boolean(entry?.closed)}
                           // The description is the vocabulary's own gloss, so hovering

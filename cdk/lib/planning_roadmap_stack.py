@@ -95,6 +95,8 @@ class PlanningRoadmapStack(cdk.Stack):
         # something. See fast/app/notifications.py.
         digest_enabled = bool(self.node.try_get_context("digest_enabled"))
         progress_enabled = bool(self.node.try_get_context("progress_enabled"))
+        rfc_chase_enabled = bool(self.node.try_get_context("rfc_chase_enabled"))
+        rfc_review_channel = self.node.try_get_context("rfc_review_channel") or ""
 
         if require_auth and not enforce_group and not allow_whole_pool:
             # Not a hypothetical footgun: this combination is a shared pool with the
@@ -148,6 +150,8 @@ class PlanningRoadmapStack(cdk.Stack):
             slack_secret_name=slack_secret_name,
             digest_enabled=digest_enabled,
             progress_enabled=progress_enabled,
+            rfc_chase_enabled=rfc_chase_enabled,
+            rfc_review_channel=rfc_review_channel,
             env=child_env,
         )
 

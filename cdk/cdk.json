@@ -122,6 +122,20 @@
       "the button. A nudge that arrives first is a message asking ten people to press",
       "something that does nothing."
     ],
-    "progress_enabled": false
+    "progress_enabled": false,
+    "_rfc_chase_comment": [
+      "The daily #request_for_comments post naming people who have not read an RFC",
+      "tagged with a skill they hold. The loudest thing this app does: it names real",
+      "colleagues, in public, every weekday, for five working days.",
+      "",
+      "rfc_review_channel is a channel ID (the C… from the channel's Copy link), not a",
+      "#name. The app must ALSO have been invited to that channel - `/invite @Aardvark`",
+      "in the channel itself. Being able to post is not the same as being a member, and",
+      "the error when it is not is `not_in_channel` and nothing else.",
+      "",
+      "With no channel set the chase refuses to run rather than guessing at one."
+    ],
+    "rfc_chase_enabled": false,
+    "rfc_review_channel": "C06BB1SUSFJ"
   }
 }

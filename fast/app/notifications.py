@@ -30,8 +30,9 @@ import logging
 from datetime import date
 from typing import Any, Optional
 
-from app import blocks, config, digest, progress, slack
-from app.db.queries import audit, people as people_q, projects as projects_q
+from app import blocks, config, digest, progress, review_chase, slack
+from app.db.queries import audit, people as people_q, projects as projects_q, work as work_q
+from app.work import RfcStatus
 
 logger = logging.getLogger(__name__)
 
@@ -310,6 +311,116 @@ def run_progress_nudge(
     return summary
 
 
+def run_rfc_chase(
+    today: Optional[date] = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """
+    Post the day's outstanding RFC reads to #request_for_comments.
+
+    ONE MESSAGE, NOT ONE PER RFC. Several proposals waiting is one situation, and three
+    separate posts a day is how a channel gets muted - at which point the people most
+    behind are the ones who stop seeing it.
+
+    THIS NAMES REAL PEOPLE IN PUBLIC, which is why it is gated harder than anything else
+    here: its own switch, a channel that has to be configured explicitly rather than
+    guessed at, and a hard stop after five working days. See review_chase for who is
+    chosen and app/config.py for the switches.
+
+    Claimed per day, like the progress nudge, so a retried schedule cannot post the same
+    list twice. The claim is on the CHANNEL rather than on a person, because there is one
+    post and it either went out or it did not.
+    """
+    today = today or date.today()
+    day = today.isoformat()
+
+    summary: dict[str, Any] = {
+        "job": "rfc-chase",
+        "today": day,
+        "dry_run": dry_run,
+        "rfcs_chased": 0,
+        "people_named": 0,
+        "posted": False,
+        "already_posted": False,
+        "no_slack_account": [],
+        "failed": [],
+        "blocks": None,
+    }
+
+    if not config.RFC_REVIEW_CHANNEL and not dry_run:
+        # Refused rather than guessed. Posting a list of colleagues who owe a review
+        # into the wrong room is not a mistake worth risking to save a deploy.
+        summary["failed"].append({"channel": "*", "error": "RFC_REVIEW_CHANNEL is not set"})
+        logger.error("RFC chase: no channel configured; posting nothing.")
+        return summary
+
+    entries = review_chase.chase_targets(
+        work_q.list_rfcs(),
+        people_q.list_people(),
+        today,
+        RfcStatus.REVIEW.value,
+    )
+    summary["rfcs_chased"] = len(entries)
+    if not entries:
+        # Nothing outstanding, or everything has run out its week. Either way the
+        # channel hears nothing - see compose_chase.
+        return summary
+
+    try:
+        ids = _slack_ids()
+    except slack.SlackError as e:
+        summary["failed"].append({"channel": "*", "error": str(e)})
+        logger.error("RFC chase abandoned, no Slack directory: %s", e)
+        return summary
+
+    mentions_for: dict[str, list[str]] = {}
+    missing: set = set()
+    for entry in entries:
+        mentions = []
+        for email in entry["outstanding"]:
+            slack_id = ids.get(email)
+            if slack_id:
+                mentions.append(f"<@{slack_id}>")
+            else:
+                # On the roster and holding the skill, but not findable in Slack. Named
+                # in the summary rather than silently omitted: they are the one group
+                # the chase cannot reach at all.
+                missing.add(email)
+        mentions_for[entry["item_id"]] = mentions
+    summary["no_slack_account"] = sorted(missing)
+    summary["people_named"] = sum(len(m) for m in mentions_for.values())
+
+    body = blocks.compose_chase(entries, mentions_for, config.APP_URL)
+    text = blocks.chase_fallback(entries)
+    summary["blocks"] = body
+
+    if dry_run:
+        return summary
+
+    if not audit.claim_once(f"rfc-chase#{config.RFC_REVIEW_CHANNEL}", day, detail=text):
+        summary["already_posted"] = True
+        return summary
+
+    try:
+        slack.post(config.RFC_REVIEW_CHANNEL, text, blocks=body)
+    except slack.SlackError as e:
+        # The day stays claimed, so this does not retry itself into a double post. A
+        # channel the app was never invited to is the likely cause and needs a human.
+        summary["failed"].append({"channel": config.RFC_REVIEW_CHANNEL, "error": str(e)})
+        logger.error("RFC chase post failed: %s", e)
+        return summary
+
+    summary["posted"] = True
+    logger.info(
+        "RFC chase %s: %s proposal(s), %s mention(s), %s unreachable",
+        day,
+        summary["rfcs_chased"],
+        summary["people_named"],
+        len(summary["no_slack_account"]),
+    )
+    return summary
+
+
 def lambda_handler(event: Optional[dict] = None, context: Any = None) -> dict[str, Any]:
     """
     What EventBridge invokes on Monday morning. See cdk/lib/lambda_stack.py.
@@ -358,6 +469,12 @@ def lambda_handler(event: Optional[dict] = None, context: Any = None) -> dict[st
             logger.info("PROGRESS_ENABLED is off; composing and sending nothing.")
             return {"skipped": "PROGRESS_ENABLED is off", "sent": 0}
         return run_progress_nudge(today=today, dry_run=dry_run)
+
+    if job == "rfc-chase":
+        if not config.RFC_CHASE_ENABLED and not dry_run:
+            logger.info("RFC_CHASE_ENABLED is off; posting nothing.")
+            return {"skipped": "RFC_CHASE_ENABLED is off", "posted": False}
+        return run_rfc_chase(today=today, dry_run=dry_run)
 
     if job != "digest":
         # Named rather than silently treated as the digest. A typo in a schedule's

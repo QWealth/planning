@@ -32,8 +32,10 @@ import {
   deleteRfc,
   describeError,
   getRfc,
+  markRfcRead,
   getRfcStatuses,
   getRoadmap,
+  getSkills,
 } from '../services/api';
 import { palette, radius } from '../styles/theme';
 import {
@@ -45,7 +47,7 @@ import {
   Panel,
   SecondaryButton,
 } from '../styles/ui';
-import type { Project, Rfc, StatusInfo } from '../types';
+import type { Project, Rfc, SkillInfo, StatusInfo } from '../types';
 import { resolveProjectName } from '../utils/projects';
 
 const Head = styled.div`
@@ -111,6 +113,7 @@ export default function RfcPage() {
   const [rfc, setRfc] = useState<Rfc | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [statuses, setStatuses] = useState<StatusInfo[]>([]);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(isNew);
@@ -127,14 +130,28 @@ export default function RfcPage() {
         wait on two more round trips before the form can be drawn - a select with no
         options in it looks like a project list that failed to load.
       */
-      const [vocabulary, roadmap, document] = await Promise.all([
+      const [vocabulary, roadmap, document, skillList] = await Promise.all([
         getRfcStatuses(),
         getRoadmap(true),
         isNew || !itemId ? Promise.resolve(null) : getRfc(itemId),
+        getSkills(),
       ]);
       setStatuses(vocabulary);
       setProjects(roadmap.projects);
+      setSkills(skillList);
       setRfc(document);
+
+      /*
+        Opening it counts as reading it, so the list stops highlighting it.
+
+        Deliberately not awaited and deliberately swallowed. The document is already
+        on screen by this point, and a failed read-receipt turning a proposal
+        somebody is reading into an error page would be absurd. The cost of losing
+        one is that the row stays highlighted and they open it again.
+      */
+      if (document) {
+        void markRfcRead(document.item_id).catch(() => {});
+      }
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -213,6 +230,7 @@ export default function RfcPage() {
             rfc={rfc}
             projects={projects}
             statuses={statuses}
+            skills={skills}
             onSaved={(saved) => {
               setRfc(saved);
               setEditing(false);

@@ -347,6 +347,11 @@ class PersonOut(BaseModel):
     digest_enabled: bool = False
     digest_days: int = 14
     digest_admin_report: bool = False
+    # {item_id: ISO timestamp} for every RFC this person has opened. Read-only from the
+    # API's point of view - PATCH cannot reach it, because a map-valued updatable field
+    # would let one malformed request mark everything unread at once. It is written only
+    # by POST /api/rfcs/{item_id}/read.
+    rfcs_read: dict[str, str] = Field(default_factory=dict)
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
