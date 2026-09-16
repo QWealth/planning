@@ -19,6 +19,11 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+# Imported rather than restated, so the two answers a modal can send and the two a log
+# row can hold are one list. app/milestone_check.py imports nothing from the app, so
+# this cannot cycle - the same arrangement skills.py and work.py already have.
+from app.milestone_check import ANSWERS
+
 # Imported under an alias because a milestone's field is itself called `date`, and
 # the obvious spelling of that field is a trap:
 #
@@ -341,3 +346,72 @@ class ServiceProgressOut(BaseModel):
     # the submit, most likely - is something the person should be told about by name,
     # because their answer to that question has just been lost.
     missing: list[str] = []
+
+
+class ServiceMilestoneAnswerIn(BaseModel):
+    """
+    One person's answer to one day-of milestone question.
+
+    Singular, unlike ServiceProgressIn's batch, because the message asks one question
+    per milestone and each button press is one answer - see blocks.compose_milestone_check
+    for why those are not batched behind a single "update all" control.
+
+    `actor_email` is taken on the caller's word for exactly the reasons ServiceProgressIn
+    sets out, and here the stakes are slightly higher: this writes somebody's NAME
+    against a stated reason a deadline slipped. The mitigation is the same and is the
+    only one available - reaching this route needs both the execute-api grant in
+    aardvarkaap and the role allowlist in cdk.json.
+    """
+
+    actor_email: str = Field(min_length=3, max_length=254)
+    project_id: str = Field(min_length=1)
+    milestone_id: str = Field(min_length=1)
+    # Carried from the button rather than re-read, so the log records the milestone as
+    # it stood when the question was asked. See db/models.py MilestoneCheckModel.
+    milestone_name: str = Field(default="", max_length=300)
+    project_name: str = Field(default="", max_length=300)
+    due: str = Field(min_length=10, max_length=10)
+    answer: str
+    # Long enough for a paragraph, capped so a paste of an entire email thread is
+    # refused at the edge rather than stored. Null is a real answer - see the model.
+    reason: Optional[str] = Field(default=None, max_length=2000)
+
+    @field_validator("actor_email")
+    @classmethod
+    def _normalise_actor(cls, value: str) -> str:
+        """Lowercased, like every other address this API stores or compares."""
+        cleaned = value.strip().lower()
+        if "@" not in cleaned:
+            raise ValueError("actor_email must be an email address")
+        return cleaned
+
+    @field_validator("answer")
+    @classmethod
+    def _known_answer(cls, value: str) -> str:
+        """One of the two. A typo here would write a log row nothing can read back."""
+        cleaned = value.strip().lower()
+        if cleaned not in ANSWERS:
+            raise ValueError(f"answer must be one of {', '.join(ANSWERS)}")
+        return cleaned
+
+    @field_validator("reason")
+    @classmethod
+    def _tidy_reason(cls, value: Optional[str]) -> Optional[str]:
+        """Whitespace-only is nothing said, which is the same state as not answering."""
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+
+class ServiceMilestoneAnswerOut(BaseModel):
+    """What was recorded, and whether the milestone itself moved."""
+
+    actor_email: str
+    answer: str
+    # False when the answer was "not yet", and also when the milestone had been deleted
+    # between the DM and the button press. The log row is written either way, because
+    # what somebody said is worth keeping even when there is no longer a milestone to
+    # tick - which is exactly the case a reader of the log wants to see.
+    milestone_marked_done: bool = False
+    logged: bool = True

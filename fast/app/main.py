@@ -9,7 +9,17 @@ from fastapi.responses import JSONResponse
 from mangum import Mangum
 
 from app import config
-from app.routes import digest, identity, people, projects, roadmap, service, slack, work
+from app.routes import (
+    digest,
+    identity,
+    milestone_log,
+    people,
+    projects,
+    roadmap,
+    service,
+    slack,
+    work,
+)
 
 # Configure logging.
 #
@@ -52,6 +62,11 @@ app.include_router(roadmap.router)
 # The job that actually sends is app/notifications.py, invoked by EventBridge rather
 # than through here.
 app.include_router(digest.router)
+
+# The milestone-check log. The only route in the app gated on a ROSTER ROLE rather
+# than on a Cognito group - routes/milestone_log.py opens by explaining why that is
+# a weaker gate than it looks and why it is the right one here anyway.
+app.include_router(milestone_log.router)
 
 # RFCs and tasks. Two routers over one table - see routes/work.py for why the two
 # kinds do not share a prefix even though they share every access pattern.

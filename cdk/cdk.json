@@ -148,6 +148,27 @@
       "With no channel set the chase refuses to run rather than guessing at one."
     ],
     "rfc_chase_enabled": false,
+    "_milestone_check_comment": [
+      "The weekday 09:15 day-of milestone check: DMs the project DRI on the day a",
+      "milestone was dated, asking whether it landed, and if not, why. The answer is",
+      "written to a log that only people holding the BA role can read.",
+      "",
+      "A fourth switch rather than a reuse of any of the three above, for the same",
+      "reason they are three: a new thing that DMs colleagues is a new decision. What",
+      "is different about this one is that the answer is KEPT and read by other people,",
+      "which is a heavier thing to start doing to a team by accident.",
+      "",
+      "Like the progress nudge, it must not be turned on before Aardvark Aap is",
+      "deployed with handlers for its two buttons - roadmap_milestone_done and",
+      "roadmap_milestone_missed - and before the execute-api grant in",
+      "aardvarkaap/lib/aardvark-app-stack.ts names POST /api/service/milestones/answer.",
+      "The grant is per method; without it the buttons reach a 403.",
+      "",
+      "Note on the BA gate: roles are self-service, so anybody can give themselves the",
+      "role and read the log. See fast/app/routes/milestone_log.py, which says so at",
+      "length. It keeps the log off the wrong people's navigation; it is not a wall."
+    ],
+    "milestone_check_enabled": false,
     "rfc_review_channel": "C06BB1SUSFJ"
   }
 }

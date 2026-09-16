@@ -364,6 +364,43 @@ export interface Identity {
    * check still happens server-side.
    */
   onboarded?: boolean;
+  /**
+   * Whether to draw the Log tab.
+   *
+   * FAILS CLOSED, which is the opposite of `onboarded` above and the reason both are
+   * documented rather than one. That flag is a routing hint and errs towards letting
+   * people in; this one mirrors a gate, so an old backend that has never heard of it
+   * leaves it undefined and the tab stays hidden. The endpoint refuses independently —
+   * this only stops a tab appearing over a route that would 403.
+   */
+  is_ba?: boolean;
+}
+
+/**
+ * One answer to one day-of milestone question.
+ *
+ * Every field is a snapshot of how things stood when the question was asked, not a
+ * view of current state — a milestone renamed or rescheduled afterwards does not
+ * rewrite the record of what somebody was asked. See MilestoneCheckModel in
+ * fast/app/db/models.py.
+ */
+export interface MilestoneCheck {
+  item_id: string;
+  project_id: string | null;
+  project_name: string;
+  milestone_id: string | null;
+  milestone_name: string;
+  due: string | null;
+  asked_email: string | null;
+  /** 'done' or 'not_done'. */
+  answer: string;
+  /**
+   * Why it did not land, when they said. Null against `not_done` means they were
+   * asked and did not answer — a modal dismissed rather than submitted, which is a
+   * real state and not a missing field.
+   */
+  reason: string | null;
+  created_at: string | null;
 }
 
 /**

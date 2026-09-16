@@ -619,6 +619,89 @@ class RfcModel:
         }
 
 
+class MilestoneCheckModel:
+    """
+    One answer to one "did this land?" question, written once and never edited.
+
+    A LOG, NOT A VIEW OF CURRENT STATE
+    -----------------------------------
+    Every field is a snapshot of how things stood when the question was asked and
+    answered: the milestone's name, its due date, who was asked. None of them is looked
+    up again on read, and none is updatable.
+
+    That is the whole design and it is worth being explicit about, because the obvious
+    alternative - storing milestone_id and joining on read - is wrong here in a way it
+    is not wrong for, say, a comment. The point of this log is "what did we commit to,
+    did it happen, and what was said about it". A milestone that is renamed, moved to a
+    new date or deleted a fortnight later must not retroactively change the record of a
+    question somebody already answered. Joining on read would do exactly that, and the
+    entries most worth reading - the ones about deadlines that slipped and were then
+    rescheduled - are precisely the ones the join would rewrite.
+
+    `reason` IS NULLABLE AND MEANS TWO THINGS
+    ------------------------------------------
+    Null against a `done` answer is "there was nothing to explain". Null against a
+    `not_done` answer is "they were asked and did not say" - a modal dismissed rather
+    than submitted. Both are real states and neither is an error, which is why the
+    reason is not required and why the reader distinguishes them by the answer rather
+    than by the presence of text.
+
+    The answer vocabulary lives in app/milestone_check.py, imported rather than
+    restated so the stored values cannot drift from the ones that get written.
+    """
+
+    @staticmethod
+    def create_item(
+        item_id: str,
+        project_id: str,
+        project_name: str,
+        milestone_id: str,
+        milestone_name: str,
+        due: str,
+        asked_email: str,
+        answer: str,
+        reason: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Build a log row. `due` is an ISO day string; `answer` is one of ANSWERS."""
+        now = _now()
+        return {
+            "item_id": item_id,
+            "sk": WORK_SK,
+            "kind": Kind.MILESTONE_CHECK.value,
+            "project_id": project_id,
+            "project_name": project_name,
+            "milestone_id": milestone_id,
+            "milestone_name": milestone_name,
+            "due": due,
+            "asked_email": asked_email,
+            "answer": answer,
+            "reason": (reason or None),
+            "created_at": now,
+            # Written and never moved. Present because the kind GSI sorts on it, so a
+            # row without one would be invisible to every list query - which is the
+            # quietest possible way for a log to lose entries.
+            "updated_at": now,
+        }
+
+    @staticmethod
+    def from_item(item: dict[str, Any]) -> dict[str, Any]:
+        """Convert a DynamoDB item to a schema-compatible dict."""
+        return {
+            "item_id": item.get("item_id"),
+            "kind": Kind.MILESTONE_CHECK.value,
+            "project_id": item.get("project_id"),
+            "project_name": item.get("project_name") or "Untitled project",
+            "milestone_id": item.get("milestone_id"),
+            "milestone_name": item.get("milestone_name") or "Untitled milestone",
+            "due": item.get("due"),
+            "asked_email": item.get("asked_email"),
+            "answer": item.get("answer"),
+            "reason": item.get("reason") or None,
+            "created_at": item.get("created_at"),
+            "updated_at": item.get("updated_at"),
+        }
+
+
 class CommentModel:
     """
     One remark on a work item, stored as a child row of the item it is about.

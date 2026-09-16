@@ -247,6 +247,12 @@ export default function AppShell({ auth }: { auth: AuthState }) {
               end of it: the other four tabs are the work, this one is about you. It is
               a tab and not a menu under the address on the right because a Monday DM
               somebody did not ask for should be switchable off from somewhere obvious. */}
+          {/* Only for business analysts, and hidden rather than disabled: a tab
+              nobody may open is a question about what they are missing. `is_ba` is
+              undefined on an older backend and reads as false, which is the right
+              direction for a flag that mirrors a gate - see types.ts. The route
+              enforces it again regardless. */}
+          {identity?.is_ba ? <Tab to="/milestone-log">Log</Tab> : null}
           <Tab to="/settings">Settings</Tab>
         </Nav>
         <Spacer />

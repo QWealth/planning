@@ -16,6 +16,7 @@ import type {
   Identity,
   InviteResult,
   Milestone,
+  MilestoneCheck,
   MilestoneCreate,
   MilestonePatch,
   Person,
@@ -739,3 +740,15 @@ export async function deleteTask(itemId: string): Promise<void> {
 }
 
 export default apiClient;
+
+/**
+ * The milestone-check log, newest first.
+ *
+ * 403s for anybody without the BA role on their roster entry. The caller should check
+ * `identity.is_ba` before offering the link rather than relying on the refusal — both
+ * come through the same predicate on the server, so they cannot disagree.
+ */
+export async function getMilestoneLog(): Promise<MilestoneCheck[]> {
+  const response = await apiClient.get<MilestoneCheck[]>('/milestone-log');
+  return response.data;
+}

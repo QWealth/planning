@@ -40,6 +40,7 @@ class LambdaStack(cdk.Stack):
         slack_secret_name: str = "",
         digest_enabled: bool = False,
         progress_enabled: bool = False,
+        milestone_check_enabled: bool = False,
         rfc_chase_enabled: bool = False,
         rfc_review_channel: str = "",
         **kwargs,
@@ -289,6 +290,11 @@ class LambdaStack(cdk.Stack):
                 # does: naming colleagues in a public channel, daily. Nothing about that
                 # should start as a side effect of turning the other two on.
                 "RFC_CHASE_ENABLED": "true" if rfc_chase_enabled else "false",
+                # The fourth, for the day-of milestone check. Its own switch for the
+                # same reason as the others, and one more: this is the only scheduled
+                # message that writes a colleague's stated reason into a log other
+                # people read, which is not a thing to start doing as a side effect.
+                "MILESTONE_CHECK_ENABLED": "true" if milestone_check_enabled else "false",
                 # A channel ID, not a name, and empty means the chase refuses to run.
                 # See config.RFC_REVIEW_CHANNEL - the app must also have been invited to
                 # the channel, which is not something a deploy can do.
@@ -375,6 +381,38 @@ class LambdaStack(cdk.Stack):
                 retry_attempts=0,
             ),
             description="Monday/Wednesday progress nudge to phase owners and DRIs",
+        )
+
+        # The day-of milestone check, weekday mornings.
+        #
+        # MON-FRI, and 09:15 - between the progress nudge at 09:00 and the RFC chase at
+        # 09:30. Fifteen minutes rather than the thirty separating the other two because
+        # this one is usually silent: most people have no milestone dated today, so on
+        # most mornings it is not a third interruption at all. When it is, it is the
+        # most time-sensitive of the three - the question is about today.
+        #
+        # Weekdays only, with the job itself covering the weekend. A Saturday deadline
+        # is asked about on the Monday, because a Sunday DM about it is a question
+        # nobody is there to answer and one that has scrolled away by the time they are.
+        # See milestone_check.window, which is what makes the two halves line up.
+        scheduler.Schedule(
+            self,
+            "MilestoneCheckSchedule",
+            schedule=scheduler.ScheduleExpression.cron(
+                week_day="MON-FRI",
+                hour="9",
+                minute="15",
+                time_zone=cdk.TimeZone.AMERICA_TORONTO,
+            ),
+            target=scheduler_targets.LambdaInvoke(
+                self.digest_function,
+                input=scheduler.ScheduleTargetInput.from_object({"job": "milestone-check"}),
+                # Same reasoning as the other three: the run claims the day per person
+                # before it sends, so a retry cannot double-ask, and it should not have
+                # to rely on that.
+                retry_attempts=0,
+            ),
+            description="Weekday day-of milestone check to project DRIs",
         )
 
         # The RFC read-chase, weekday mornings.

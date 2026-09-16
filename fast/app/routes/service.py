@@ -38,10 +38,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app import cognito, invites
 from app.auth import require_service_caller
 from app.db.models import AuditLogModel
-from app.db.queries import audit, projects as projects_q
+from app.db.queries import audit, projects as projects_q, work as work_q
 from app.db.queries._updates import ValidationError
 from app.schemas.people import InviteIn, InviteOut
-from app.schemas.projects import ServiceProgressIn, ServiceProgressOut
+from app.milestone_check import ANSWER_DONE
+from app.schemas.projects import (
+    ServiceMilestoneAnswerIn,
+    ServiceMilestoneAnswerOut,
+    ServiceProgressIn,
+    ServiceProgressOut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,3 +165,102 @@ async def service_set_progress(
         len(missing),
     )
     return {"actor_email": body.actor_email, "updated": updated, "missing": missing}
+
+
+@router.post("/milestones/answer", response_model=ServiceMilestoneAnswerOut)
+async def service_milestone_answer(
+    body: ServiceMilestoneAnswerIn,
+    caller: str = Depends(require_service_caller),
+) -> dict[str, Any]:
+    """
+    Record what the DRI said when asked whether a milestone landed.
+
+    THE THIRD THING THIS DOOR CAN DO, and like the second it needs its own line in the
+    execute-api policy in aardvarkaap/lib/aardvark-app-stack.ts - the grant is per
+    METHOD, so deploying this repo alone leaves the route returning 403 until that one
+    ships too. That is the intended failure: a handler that cannot reach the API sends
+    nothing, rather than a message whose buttons do nothing.
+
+    THE LOG IS WRITTEN FIRST AND ALWAYS
+    ------------------------------------
+    Before the milestone is touched, and whatever happens to it afterwards. Both halves
+    matter and they are the same argument in two directions.
+
+    Writing first means a tick that fails leaves a record that somebody said it was
+    done - which is recoverable by a human reading the log, where the opposite order
+    would leave a ticked milestone nobody appears to have ticked. Writing always means
+    a `not_done` with no milestone change still lands, and so does an answer about a
+    milestone that was deleted between the DM and the button press. That last case is
+    the one worth protecting: "I was asked about this and it had already gone" is
+    exactly the kind of thing a reader of the log needs to see, and the obvious
+    implementation - look it up, bail if missing - discards it.
+
+    So a deleted milestone comes back with `milestone_marked_done: false` and a log row
+    intact, rather than a 404 that loses the answer.
+
+    THE AUDIT NAMES THE PERSON, NOT THE SERVICE
+    -------------------------------------------
+    Same reasoning as the progress route above, and for a stronger reason: this one
+    writes a sentence somebody typed about why their deadline moved. Attributing that
+    to `service:<RoleName>` would put an unsigned statement in a log other people read.
+    """
+    logged = work_q.create_milestone_check(
+        {
+            "project_id": body.project_id,
+            "project_name": body.project_name,
+            "milestone_id": body.milestone_id,
+            "milestone_name": body.milestone_name,
+            "due": body.due,
+            "asked_email": body.actor_email,
+            "answer": body.answer,
+            "reason": body.reason,
+        }
+    )
+
+    marked = False
+    if body.answer == ANSWER_DONE:
+        before = projects_q.get_milestone(body.project_id, body.milestone_id)
+        if before is None:
+            # Deleted or rescheduled onto another project since the DM. The answer is
+            # already recorded above, which is the part that cannot be reconstructed.
+            logger.warning(
+                "Milestone %s gone; answer from %s logged but nothing ticked",
+                body.milestone_id,
+                body.actor_email,
+            )
+        else:
+            try:
+                after = projects_q.update_milestone(
+                    body.project_id, body.milestone_id, {"done": True}
+                )
+            except ValidationError as e:
+                # The milestone's own rules refused it. Reported rather than raised:
+                # the answer is kept and the person is told the tick did not take.
+                logger.warning("Marking %s done refused: %s", body.milestone_id, e)
+                after = None
+            if after is not None:
+                marked = True
+                audit.record(
+                    action="update",
+                    entity=AuditLogModel.ENTITY_MILESTONE,
+                    entity_id=body.milestone_id,
+                    before=before,
+                    after=after,
+                    # The person, not the service. See above.
+                    user_email=body.actor_email,
+                )
+
+    logger.info(
+        "Milestone answer from %s (via %s): %s on %s, ticked=%s",
+        body.actor_email,
+        caller,
+        body.answer,
+        body.milestone_id,
+        marked,
+    )
+    return {
+        "actor_email": body.actor_email,
+        "answer": body.answer,
+        "milestone_marked_done": marked,
+        "logged": bool(logged),
+    }

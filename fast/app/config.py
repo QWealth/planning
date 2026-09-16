@@ -183,6 +183,24 @@ RFC_CHASE_ENABLED = os.environ.get("RFC_CHASE_ENABLED", "false").strip().lower()
     "yes",
 }
 
+# A fourth switch, for the day-of milestone check. The pattern is now established and
+# the reasoning is the same each time: a new thing that DMs colleagues gets its own
+# switch rather than riding on somebody else's.
+#
+# What is different about this one is what it asks for. The digest tells you what is
+# coming, the nudge asks for a percentage; this asks whether a dated commitment was met
+# and, if not, why - and it writes the answer into a log other people read. That is a
+# heavier thing to start doing to a team by accident than either of the others, so it
+# is off by default and stays off until somebody decides otherwise.
+#
+# Like the nudge, it also needs Aardvark deployed with handlers for its two buttons
+# before it is any use. A question with inert buttons is worse than no question.
+MILESTONE_CHECK_ENABLED = os.environ.get("MILESTONE_CHECK_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
 # Logging. See the Lambda note in main.py - basicConfig alone does nothing there.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 

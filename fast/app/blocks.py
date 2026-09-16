@@ -271,3 +271,149 @@ def chase_fallback(entries: list[dict[str, Any]]) -> str:
     """The notification line. Names nothing - the channel list is enough on a badge."""
     proposals = "proposal" if len(entries) == 1 else "proposals"
     return f"{len(entries)} {proposals} on the roadmap still need a read."
+
+
+# ----------------------------------------------------- the milestone day-of check
+#
+# A DM to one person on the day their milestone was due, asking whether it landed. Two
+# buttons rather than a modal-first flow, because the common answer is "yes" and that
+# should cost one tap; the "not yet" path opens a modal for the reason, which is the
+# only part anybody has to type.
+#
+# WHY THE QUESTION IS ASKED PER MILESTONE AND NOT PER MESSAGE
+#
+# The progress nudge batches a project's phases behind one button because its answers
+# are numbers on a form and thirteen of them in one modal is still one task. These
+# answers are not: each is a yes/no with a different story behind it, and a single
+# "update all of these" button would force somebody who knows about one deadline to
+# take a position on the other two. Per milestone, each can be answered or left.
+
+ACTION_MILESTONE_DONE = "roadmap_milestone_done"
+ACTION_MILESTONE_MISSED = "roadmap_milestone_missed"
+
+
+def milestone_value(row: dict[str, Any]) -> str:
+    """
+    What the button hands back: enough to write the answer without a second read.
+
+    The name and due date ride along because the log row records them as they stood
+    when the question was asked. A milestone renamed or rescheduled a week later must
+    not silently rewrite the history of what somebody was asked - the log is a record of
+    a conversation, not a view onto current state.
+
+    Short keys for the same 2000-character budget button_value documents. There is no
+    truncation loop here because one milestone cannot approach the cap: a name would
+    have to be 1900 characters, and the name field is capped long before that.
+    """
+    return json.dumps(
+        {
+            "pid": row["project_id"],
+            "mid": row["milestone_id"],
+            "n": row["milestone_name"],
+            "d": row["due"],
+        },
+        separators=(",", ":"),
+    )[:MAX_VALUE]
+
+
+def milestone_line(row: dict[str, Any]) -> str:
+    """One milestone's text: what it was, on which lane, and when it was due."""
+    when = "was due" if row.get("late") else "is due"
+    return f"*{row['milestone_name']}*\n{row['project_name']} · {when} {row['due']}"
+
+
+def compose_milestone_check(
+    name: Optional[str],
+    rows: list[dict[str, Any]],
+) -> Optional[list[dict[str, Any]]]:
+    """
+    One person's day-of questions. None when they have none.
+
+    None rather than an empty message, for the third time in this file and the same
+    reason: a daily DM saying "nothing was due today" is how a bot becomes something
+    people filter, and most days most people have nothing due.
+    """
+    if not rows:
+        return None
+
+    greeting = f"Hi {name}" if name else "Hi"
+    count = len(rows)
+    noun = "milestone" if count == 1 else "milestones"
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{greeting} — did {'it' if count == 1 else 'these'} land?"},
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"You are the DRI on {count} {noun} dated for today or over the "
+                        "weekend. *Yes* ticks it off on the roadmap; *not yet* asks what "
+                        "held it up."
+                    ),
+                }
+            ],
+        },
+        {"type": "divider"},
+    ]
+
+    for row in rows:
+        value = milestone_value(row)
+        blocks.append(
+            {"type": "section", "text": {"type": "mrkdwn", "text": milestone_line(row)}}
+        )
+        blocks.append(
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Yes, it's done"},
+                        # The milestone id is in the action_id as well as in the value,
+                        # so two questions in one message cannot be told apart only by a
+                        # payload the handler has to parse before it knows which is which.
+                        "action_id": f"{ACTION_MILESTONE_DONE}::{row['milestone_id']}",
+                        "value": value,
+                        "style": "primary",
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Not yet"},
+                        "action_id": f"{ACTION_MILESTONE_MISSED}::{row['milestone_id']}",
+                        "value": value,
+                    },
+                ],
+            }
+        )
+
+    blocks.append(
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    # Said out loud because the answer is kept, and somebody typing a
+                    # reason deserves to know it is written down and who reads it. A log
+                    # nobody was told about is the kind of thing people find out about
+                    # later and resent.
+                    "text": (
+                        "Answers are recorded on the roadmap so the team can see what "
+                        "moved and why. Business analysts can read the log."
+                    ),
+                }
+            ],
+        }
+    )
+
+    return blocks
+
+
+def milestone_fallback(name: Optional[str], count: int) -> str:
+    """The lock-screen line. Required whenever blocks are sent - see fallback_text."""
+    lead = f"{name}, " if name else ""
+    if count == 1:
+        return f"{lead}a milestone was due — did it land?"
+    return f"{lead}{count} milestones were due — did they land?"

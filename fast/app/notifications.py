@@ -30,7 +30,7 @@ import logging
 from datetime import date
 from typing import Any, Optional
 
-from app import blocks, config, digest, progress, review_chase, slack
+from app import blocks, config, digest, milestone_check, progress, review_chase, slack
 from app.db.queries import audit, people as people_q, projects as projects_q, work as work_q
 from app.work import RfcStatus
 
@@ -311,6 +311,118 @@ def run_progress_nudge(
     return summary
 
 
+def run_milestone_check(
+    today: Optional[date] = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """
+    Ask each DRI whether the milestones dated for today - or the weekend just gone -
+    actually landed.
+
+    Same claim-then-send ordering as everything else in this module, and claimed by the
+    DAY like the progress nudge, because this runs every working day. The claim is per
+    PERSON per day rather than per milestone: somebody with three deadlines on one
+    morning gets one message containing three questions, and a per-milestone claim
+    would let a retry send the second and third again after the first succeeded.
+
+    NO PER-PERSON OPT-IN, like the nudge and unlike the digest. Being asked whether your
+    own dated commitment was met is not a notification preference. The consequence is
+    the same and is worth restating: this is an unsolicited DM, so the deployment switch
+    is the thing doing the protecting.
+
+    ASKED ONCE, NOT UNTIL ANSWERED. A milestone nobody replies about is not re-asked the
+    next day - the window moves on (see milestone_check.window) and tomorrow covers
+    tomorrow. That is deliberate: a question repeated daily stops being a question and
+    becomes the nagging the RFC chase's five-day cap exists to avoid, and an unanswered
+    one is already visible as an untitled overdue milestone on the roadmap and in the
+    digest. One ask, one chance to explain, and the silence is itself recorded by the
+    absence of a log row.
+    """
+    today = today or date.today()
+    day = today.isoformat()
+    since, _ = milestone_check.window(today)
+
+    summary: dict[str, Any] = {
+        "job": "milestone-check",
+        "today": day,
+        "since": since.isoformat(),
+        "dry_run": dry_run,
+        "due": 0,
+        "asked": 0,
+        "sent": 0,
+        "already_sent": 0,
+        "unasked_milestones": 0,
+        "no_slack_account": [],
+        "failed": [],
+        "messages": [],
+    }
+
+    rows = milestone_check.due_in_window(projects_q.list_projects(), today)
+    summary["due"] = len(rows)
+    # The deadlines with nobody accountable. Counted whether or not anybody is messaged,
+    # for the reason progress.unasked gives: a run reporting only its sends would look
+    # healthy while the milestones most worth noticing passed in silence.
+    summary["unasked_milestones"] = len(milestone_check.unasked(rows))
+
+    grouped = milestone_check.group_by_dri(rows)
+    summary["asked"] = len(grouped)
+    if not grouped:
+        # The ordinary case on most days. Nothing due means no Slack call at all.
+        return summary
+
+    names = {
+        (person.get("email") or "").strip().lower(): person.get("name")
+        for person in people_q.list_people()
+    }
+
+    try:
+        ids = _slack_ids()
+    except slack.SlackError as e:
+        # No directory, no way to address anybody. Nothing claimed, so the whole run
+        # stays retryable exactly as it stands.
+        summary["failed"].append({"email": "*", "error": str(e)})
+        logger.error("Milestone check abandoned, no Slack directory: %s", e)
+        return summary
+
+    for email, mine in grouped.items():
+        name = names.get(email)
+        body = blocks.compose_milestone_check(name, mine)
+        if body is None:
+            continue
+
+        slack_user_id = ids.get(email)
+        if not slack_user_id:
+            # DRI of a lane with a deadline today, and not findable in Slack. Named
+            # rather than logged and forgotten: nobody is asking them anything.
+            summary["no_slack_account"].append(email)
+            continue
+
+        _deliver(
+            email,
+            slack_user_id,
+            blocks.milestone_fallback(name, len(mine)),
+            f"milestone-check#{email}",
+            day,
+            summary,
+            dry_run,
+            blocks=body,
+        )
+
+    logger.info(
+        "Milestone check %s (since %s): %s due, %s asked, %s sent, %s already sent, "
+        "%s with no DRI, %s failed",
+        day,
+        summary["since"],
+        summary["due"],
+        summary["asked"],
+        summary["sent"],
+        summary["already_sent"],
+        summary["unasked_milestones"],
+        len(summary["failed"]),
+    )
+    return summary
+
+
 def run_rfc_chase(
     today: Optional[date] = None,
     dry_run: bool = False,
@@ -469,6 +581,12 @@ def lambda_handler(event: Optional[dict] = None, context: Any = None) -> dict[st
             logger.info("PROGRESS_ENABLED is off; composing and sending nothing.")
             return {"skipped": "PROGRESS_ENABLED is off", "sent": 0}
         return run_progress_nudge(today=today, dry_run=dry_run)
+
+    if job == "milestone-check":
+        if not config.MILESTONE_CHECK_ENABLED and not dry_run:
+            logger.info("MILESTONE_CHECK_ENABLED is off; asking nobody.")
+            return {"skipped": "MILESTONE_CHECK_ENABLED is off", "sent": 0}
+        return run_milestone_check(today=today, dry_run=dry_run)
 
     if job == "rfc-chase":
         if not config.RFC_CHASE_ENABLED and not dry_run:

@@ -38,7 +38,14 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from app import config
-from app.db.models import COMMENT_SK_PREFIX, WORK_SK, CommentModel, RfcModel, TaskModel
+from app.db.models import (
+    COMMENT_SK_PREFIX,
+    WORK_SK,
+    CommentModel,
+    MilestoneCheckModel,
+    RfcModel,
+    TaskModel,
+)
 from app.db.queries._updates import ValidationError, apply_update
 from app.db.queries._updates import iso as _iso
 from app.work import Kind, RfcStatus
@@ -604,3 +611,52 @@ def _delete_comments(item_id: str) -> int:
             # abandoning that leaves a worse state than one stranded comment row.
             logger.error("Error deleting comment row %s on %s: %s", row.get("sk"), item_id, e)
     return removed
+
+
+# ------------------------------------------------- the milestone-check log
+#
+# Append-only. There is no update and no delete, and that is not an omission - see
+# MilestoneCheckModel for why a log of what people said must not be rewritten by later
+# edits to the thing they said it about. The only operations are "write one" and "read
+# them all", which is why this is twenty lines against RFCs' three hundred.
+
+
+def create_milestone_check(entry: dict[str, Any]) -> dict[str, Any]:
+    """
+    Record one answer to one day-of milestone question.
+
+    No conditional write and no idempotency key. Two answers to the same question is a
+    state worth keeping rather than collapsing: somebody who says "not yet, waiting on
+    legal" in the morning and "done" an hour later has told a small story, and a
+    conditional put would keep the first and silently drop the second. The reader shows
+    the thread in time order; see list_milestone_checks.
+    """
+    item = MilestoneCheckModel.create_item(
+        item_id=_new_id("mc"),
+        project_id=entry["project_id"],
+        project_name=entry.get("project_name") or "",
+        milestone_id=entry["milestone_id"],
+        milestone_name=entry.get("milestone_name") or "",
+        due=entry["due"],
+        asked_email=entry["asked_email"],
+        answer=entry["answer"],
+        reason=entry.get("reason"),
+    )
+    try:
+        get_work_table().put_item(Item=item)
+    except ClientError as e:
+        logger.error("Error writing milestone check: %s", e)
+        raise
+    return MilestoneCheckModel.from_item(item)
+
+
+def list_milestone_checks() -> list[dict[str, Any]]:
+    """
+    The whole log, newest first.
+
+    Unpaginated, like list_rfcs and for the same reason: this grows by at most a handful
+    of rows a day and the reader is one screen. When it stops being one screen the
+    answer is a date filter on the index, not a page token the caller has to thread
+    through a UI nobody has asked for yet.
+    """
+    return [MilestoneCheckModel.from_item(i) for i in _list_kind(Kind.MILESTONE_CHECK.value)]

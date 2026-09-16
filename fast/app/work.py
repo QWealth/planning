@@ -54,6 +54,12 @@ class Kind(str, Enum):
 
     RFC = "rfc"
     TASK = "task"
+    # One answer to one day-of milestone question. A third kind in this table rather
+    # than a fourth table, because it is exactly what this table is for: a row with an
+    # id, a kind and a timestamp, read back by kind off the existing GSI. A separate
+    # table would be a second set of IAM grants, a second CDK construct and a second
+    # thing to keep in step, for a shape this one already serves.
+    MILESTONE_CHECK = "milestone-check"
 
 
 class RfcStatus(str, Enum):

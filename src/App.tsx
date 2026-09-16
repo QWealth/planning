@@ -60,6 +60,7 @@ const RfcPage = lazy(() => import('./pages/RfcPage'));
 const TasksPage = lazy(() => import('./pages/TasksPage'));
 const TaskPage = lazy(() => import('./pages/TaskPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const MilestoneLogPage = lazy(() => import('./pages/MilestoneLogPage'));
 
 export default function App() {
   return (
@@ -89,6 +90,13 @@ export default function App() {
                     fetched. /settings/{email} would imply somebody else's are editable
                     here, and they are not. */}
                 <Route path="settings" element={<SettingsPage />} />
+                {/* The milestone log. A real route rather than a panel on another
+                    page, because it is a thing somebody links to - "see the log, this
+                    is the third time" is a message people send. Unguarded here on
+                    purpose: the page itself explains the refusal, and a route that
+                    silently redirected would leave somebody who typed the address with
+                    no idea why they are looking at the roadmap. */}
+                <Route path="milestone-log" element={<MilestoneLogPage />} />
                 {/* Anything else goes to the roadmap rather than to a 404 page. The
                     only ways to reach an unknown path are a typo and a stale link,
                     and both are better served by the board than by an apology. */}

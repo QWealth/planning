@@ -33,6 +33,7 @@ from pydantic import BaseModel
 from app import config
 from app.auth import get_user_email, get_user_groups, is_admin, require_planning_group
 from app.db.queries import people as q
+from app.routes.milestone_log import holds_ba
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +57,24 @@ class Identity(BaseModel):
     # of the roadmap - see the module docstring and AppShell.tsx. Defaults True so that
     # anything which forgets to set it errs towards letting people in.
     onboarded: bool = True
+    # Whether to draw the milestone log's tab. Defaults FALSE - the opposite of
+    # `onboarded` above, and for the opposite reason: that flag is a routing hint and
+    # errs towards letting people in, this one mirrors a gate and must err towards
+    # showing nothing. The endpoint enforces it again either way; both call the same
+    # predicate so the tab and the route cannot disagree.
+    is_ba: bool = False
 
 
-def _has_roster_row(email: Optional[str]) -> bool:
+def _roster_state(email: Optional[str]) -> tuple[bool, bool]:
     """
-    Whether `email` is on the roster, failing OPEN.
+    (onboarded, is_ba) for `email`, from ONE read of the roster row.
+
+    One lookup rather than two because both answers come off the same item and this
+    endpoint is what every page load blocks on. The two flags fail in OPPOSITE
+    directions on an error and that is the interesting part - see below and see
+    routes/milestone_log.holds_ba.
+
+    `onboarded` fails OPEN.
 
     A lookup error returns True, which is the opposite of how the group check fails
     and is deliberate. `onboarded` is a routing hint, not a permission: getting it
@@ -69,14 +83,19 @@ def _has_roster_row(email: Optional[str]) -> bool:
     for an outage. Getting it wrong in the True direction sends them to the roadmap,
     which reports the actual failure. Nothing is protected by this flag, so there is
     nothing to fail closed for.
+
+    `is_ba` fails CLOSED, because it mirrors a gate. The cost of getting it wrong is a
+    tab that is missing during an outage, which is nothing; the cost the other way is a
+    tab offered to somebody the endpoint will refuse.
     """
     if not email:
-        return True
+        return True, False
     try:
-        return q.get_person(email) is not None
+        person = q.get_person(email)
     except Exception:
         logger.exception("Could not check the roster for %s; assuming onboarded", email)
-        return True
+        return True, False
+    return person is not None, holds_ba(person)
 
 
 @router.get("/me", response_model=Identity)
@@ -91,6 +110,10 @@ async def me(request: Request) -> dict[str, Any]:
     email = get_user_email(request)
     groups = get_user_groups(request)
     authorised = bool(email) and (not config.ENFORCE_GROUP or config.REQUIRED_GROUP in groups)
+    # Only for callers who got past the group check. Someone refused at the door is
+    # shown that refusal and never reaches either the onboarding form or the log, so the
+    # read would be a DynamoDB call per rejected compliance-tool login for nothing.
+    onboarded, is_ba = _roster_state(email) if authorised else (True, False)
     return {
         "email": email,
         "groups": groups,
@@ -99,10 +122,8 @@ async def me(request: Request) -> dict[str, Any]:
         "enforced": config.ENFORCE_GROUP,
         "is_admin": is_admin(request),
         "admin_group": config.ADMIN_GROUP,
-        # Only for callers who got past the group check. Someone refused at the door
-        # is shown that refusal and never reaches onboarding, so the lookup would be a
-        # DynamoDB read per rejected compliance-tool login and answer nothing.
-        "onboarded": _has_roster_row(email) if authorised else True,
+        "onboarded": onboarded,
+        "is_ba": is_ba,
     }
 
 
