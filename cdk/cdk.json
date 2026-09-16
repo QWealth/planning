@@ -111,7 +111,7 @@
       "text regardless, so nothing has to be turned on in order to be looked at.",
       "Set to true once the team has agreed to be messaged."
     ],
-    "digest_enabled": false,
+    "digest_enabled": true,
     "_progress_enabled_comment": [
       "The Monday/Wednesday progress nudge, which is a DIFFERENT switch from the one",
       "above and must stay one. The digest goes only to people who opted in on the",
@@ -147,7 +147,7 @@
       "",
       "With no channel set the chase refuses to run rather than guessing at one."
     ],
-    "rfc_chase_enabled": false,
+    "rfc_chase_enabled": true,
     "_milestone_check_comment": [
       "The weekday 09:15 day-of milestone check: DMs the project DRI on the day a",
       "milestone was dated, asking whether it landed, and if not, why. The answer is",
@@ -168,7 +168,7 @@
       "role and read the log. See fast/app/routes/milestone_log.py, which says so at",
       "length. It keeps the log off the wrong people's navigation; it is not a wall."
     ],
-    "milestone_check_enabled": false,
+    "milestone_check_enabled": true,
     "rfc_review_channel": "C06BB1SUSFJ"
   }
 }

@@ -11,7 +11,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from app import config, notifications
+from app import config, digest, notifications
 from app.db.queries import people as people_q, projects as projects_q
 
 MONDAY = date(2026, 9, 7)
@@ -65,7 +65,10 @@ class TestPreview:
 
         assert "Sign-off" in body["digest"]
         assert "Data Delivery" in body["digest"]
-        assert body["enabled"] is False  # opt-in: seeing it is not subscribing to it
+        # Mirrors whatever a fresh roster row gets, which is now on. What the flag is
+        # FOR has not changed: the preview composes the text regardless of it, so
+        # looking at your digest is still not the same as being subscribed to it.
+        assert body["enabled"] is digest.DEFAULT_DIGEST_ENABLED
 
     def test_it_shows_nothing_of_anybody_elses(self, client, aws):
         # A preview that dry-ran the whole job would put one colleague's reminders in

@@ -38,9 +38,32 @@ def milestone(name: str, when: Optional[str], done: bool = False) -> dict:
 
 
 class TestDigestPrefs:
-    def test_somebody_who_has_never_opened_settings_is_off(self):
-        # The whole point of opt-in. A person predating the feature has neither field.
-        assert digest.digest_prefs({"email": "a@b.com"}) == (False, 14)
+    def test_somebody_who_has_never_opened_settings_gets_the_default(self):
+        """
+        A person predating the feature has neither field, so both come from the
+        constants. The default was off while the digest was something nobody had asked
+        for; it is on now that the team has asked for these to reach everybody.
+
+        Asserted against DEFAULT_DIGEST_ENABLED rather than against a literal, so that
+        changing that decision again is a one-line change rather than a change plus a
+        red test that says nothing except that the number moved.
+        """
+        assert digest.digest_prefs({"email": "a@b.com"}) == (
+            digest.DEFAULT_DIGEST_ENABLED,
+            digest.DEFAULT_DIGEST_DAYS,
+        )
+
+    def test_switching_it_off_is_honoured(self):
+        """
+        The half that actually matters now the default is on: a stored False must beat
+        the default, or turning the digest off on the settings page would do nothing and
+        there would be no way out of a weekly DM.
+
+        Explicitly `is False`, because `person.get("digest_enabled", DEFAULT)` returning
+        the default for a stored False is exactly the bug this guards - and with the
+        default now True that bug would be invisible in every other test here.
+        """
+        assert digest.digest_prefs({"digest_enabled": False})[0] is False
 
     def test_stored_settings_are_honoured(self):
         person = {"digest_enabled": True, "digest_days": 30}

@@ -33,6 +33,11 @@ from app.skills import LEGACY_DEFAULT_STARS, LEGACY_LEVEL_STARS, MAX_STARS, MIN_
 # the schema validates against must be one list, not two that can drift.
 from app.work import Kind, RfcStatus, TaskStatus
 
+# The digest's opt-in default, imported for the reason above: it is one
+# decision and it must not be written down twice. app/digest.py imports
+# nothing from the app, so this cannot cycle.
+from app.digest import DEFAULT_DIGEST_ENABLED
+
 # Sort-key prefixes. Projects and phases share a partition so that one Query
 # returns a project and all of its phases.
 #
@@ -449,12 +454,19 @@ class PersonModel:
             # this existed are the same thing, unlike the absent-vs-null cases
             # elsewhere in this file.
             "rfcs_read": item.get("rfcs_read") or {},
-            # The Monday digest settings, defaulted the same way and for the same
-            # reason. Absent means off: this feature sends a DM to a colleague, so a
-            # row that has never expressed a preference must not be taken as consent.
+            # The Monday digest settings. The DEFAULT IS IMPORTED, not restated, and
+            # that is a bug fix rather than tidiness: this line used to hardcode False
+            # while app/digest.py held its own DEFAULT_DIGEST_ENABLED, so there were
+            # two defaults for one decision - and because from_item runs first, the
+            # one here silently won. Turning the other one on changed nothing at all,
+            # which a dry run caught and reading either file alone would not have.
+            #
+            # Same argument as the skills and status imports at the top of this file:
+            # a value that has to agree in two places will eventually not.
+            #
             # The window is clamped in app/digest.py rather than here, because the
             # rule about which windows exist belongs with the code that uses it.
-            "digest_enabled": bool(item.get("digest_enabled", False)),
+            "digest_enabled": bool(item.get("digest_enabled", DEFAULT_DIGEST_ENABLED)),
             "digest_days": PersonModel._digest_days(item),
             "digest_admin_report": bool(item.get("digest_admin_report", False)),
             "created_at": item.get("created_at"),

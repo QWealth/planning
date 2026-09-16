@@ -44,10 +44,21 @@ DIGEST_WINDOWS: tuple[int, ...] = (7, 14, 30)
 
 # What somebody gets before they have ever opened the settings page.
 #
-# Off, by decision: this sends a direct message to a colleague, and a system that
-# starts doing that on deploy is one nobody agreed to. `DEFAULT_DIGEST_DAYS` only
-# applies once they have switched it on.
-DEFAULT_DIGEST_ENABLED = False
+# ON as of 2026-09-16, changed deliberately and worth the paragraph.
+#
+# It was off, on the reasoning that a system which starts DMing colleagues on deploy is
+# one nobody agreed to. That reasoning was right for a feature nobody had asked for
+# yet; it is not a permanent rule, and the team has now asked for these to reach
+# everybody. Left off, the master switch would go on and the digest would still go to
+# nobody at all, because opting in requires knowing the setting exists.
+#
+# The safeguards it was protecting are still doing their jobs. DIGEST_ENABLED is the
+# deployment-level switch and this does not touch it. A person whose digest would be
+# empty is sent nothing rather than a weekly note saying so. And the setting is on the
+# settings page with an explanation, so turning it off is one click for anybody who
+# wants it off - which is the difference between a default and a decision made for
+# somebody.
+DEFAULT_DIGEST_ENABLED = True
 DEFAULT_DIGEST_DAYS = 14
 
 

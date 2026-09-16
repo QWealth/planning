@@ -15,7 +15,7 @@ easy one and it is also the one least likely to regress.
 import pytest
 from fastapi import HTTPException, Request
 
-from app import auth, config
+from app import auth, config, digest
 
 ME = "thomas@qwealth.com"
 SOMEBODY_ELSE = "piper@qwealth.com"
@@ -263,15 +263,19 @@ def test_a_member_can_switch_their_own_digest_on_and_it_persists(monkeypatch, aw
     """
     client = _client(monkeypatch, aws, _member())
     created = client.post("/api/people", json=_new(ME, "Thomas"))
-    assert created.json()["digest_enabled"] is False
+    # Whatever a new row defaults to - on, since 2026-09-16. Asserted against the
+    # constant rather than a literal so changing that decision is one line.
+    assert created.json()["digest_enabled"] is digest.DEFAULT_DIGEST_ENABLED
 
-    saved = client.patch(f"/api/people/{ME}", json={"digest_enabled": True, "digest_days": 30})
+    # Switched the OTHER way from the default, so the round trip is still proving that
+    # a preference reaches the table rather than that it happens to match it.
+    saved = client.patch(f"/api/people/{ME}", json={"digest_enabled": False, "digest_days": 30})
     assert saved.status_code == 200, saved.text
-    assert saved.json()["digest_enabled"] is True
+    assert saved.json()["digest_enabled"] is False
     assert saved.json()["digest_days"] == 30
 
     reread = client.get(f"/api/people/{ME}").json()
-    assert (reread["digest_enabled"], reread["digest_days"]) == (True, 30)
+    assert (reread["digest_enabled"], reread["digest_days"]) == (False, 30)
 
 
 def test_a_window_nobody_is_offered_is_refused_at_the_edge(monkeypatch, aws):

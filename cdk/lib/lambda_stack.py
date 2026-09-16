@@ -242,6 +242,13 @@ class LambdaStack(cdk.Stack):
         # conditional put onto it. See fast/app/db/queries/audit.py:claim_once.
         projects_table.grant_read_data(digest_role)
         people_table.grant_read_data(digest_role)
+        # The RFC chase reads proposals off the work table's kind index. Added late,
+        # and its absence was invisible for as long as RFC_CHASE_ENABLED was false -
+        # the job returned before it ever queried. A dry run with the switch on was
+        # what surfaced it, which is the argument for dry-running these against real
+        # data rather than trusting that a deploy which synthesised is a deploy that
+        # works. grant_read_data covers the table's indexes as well as the table.
+        work_table.grant_read_data(digest_role)
         audit_table.grant_read_write_data(digest_role)
 
         if slack_secret_arn:

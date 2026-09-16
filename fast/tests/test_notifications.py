@@ -109,9 +109,11 @@ class TestWhoIsMessaged:
         assert "Sign-off" in text
 
     def test_nobody_opted_in_means_slack_is_never_called(self, aws, fake_slack):
-        # The expected state for a while after this ships. Reading the directory would
-        # be a rate-limited API call to send nothing to nobody.
-        person("off@qwealth.com", "Nobody")
+        # An empty roster is now the only way to reach this - the digest defaults ON
+        # since 2026-09-16, so a person with no stored preference is opted in. The
+        # short-circuit it guards still matters: with nobody to message, reading the
+        # Slack directory would be a rate-limited call to send nothing to nobody.
+        person("off@qwealth.com", "Nobody", digest_enabled=False)
         project_with("P", "off@qwealth.com", [{"name": "M", "date": "2026-09-08"}])
         fake = fake_slack({"off@qwealth.com": "U1"}, list_error="should not be called")
 
@@ -132,9 +134,17 @@ class TestWhoIsMessaged:
         assert result["sent"] == 0
         assert fake.sent == []
 
-    def test_a_dri_who_never_opted_in_is_not_messaged(self, aws, fake_slack):
+    def test_a_dri_who_switched_it_off_is_not_messaged(self, aws, fake_slack):
+        """
+        Renamed from "never opted in", because that is no longer the same person.
+
+        The default is on, so the thing worth pinning flipped: it used to be that
+        silence meant no, and now it is that an explicit no is honoured. Getting this
+        wrong would mean there is no way out of a weekly DM, which is worse than the
+        old failure of nobody receiving one.
+        """
         person("on@qwealth.com", "On", digest_enabled=True, digest_days=14)
-        person("off@qwealth.com", "Off")
+        person("off@qwealth.com", "Off", digest_enabled=False)
         project_with("Theirs", "off@qwealth.com", [{"name": "M", "date": "2026-09-09"}])
         project_with("Mine", "on@qwealth.com", [{"name": "N", "date": "2026-09-09"}])
         fake = fake_slack({"on@qwealth.com": "U1", "off@qwealth.com": "U2"})
