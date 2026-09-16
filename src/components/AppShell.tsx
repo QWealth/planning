@@ -242,10 +242,16 @@ export default function AppShell({ auth }: { auth: AuthState }) {
         thing. Checked in JS rather than hidden in CSS so the 474KB is never fetched by
         somebody who asked not to see it; the body's gradient wash shows through
         instead, which is what the page looked like before the video existed.
+
+        Served from /assets/ rather than the root, and that is not tidiness. The
+        frontend stack caches everything except index.html for a year as `immutable`,
+        and invalidates only /assets/* on deploy - so a stable filename at the root
+        would be pinned at every edge for a year the first time it was replaced. This
+        is the same trap index.html documents for the favicon, and the same answer.
       */}
       {!reducedMotion ? (
         <BgVideo autoPlay loop muted playsInline aria-hidden="true">
-          <source src="/bg.mp4" type="video/mp4" />
+          <source src="/assets/bg.mp4" type="video/mp4" />
         </BgVideo>
       ) : null}
       <Scrim aria-hidden="true" />
