@@ -83,6 +83,22 @@ const Meta = styled.div`
   margin-top: 8px;
 `;
 
+/*
+  A chip that is also a link to the roadmap lane.
+
+  Wrapping the Chip rather than restyling it, so the chip keeps the one appearance it
+  has everywhere else and this stays a link with a chip inside it - which is also what
+  gives the whole chip the hit area rather than just the text.
+*/
+const LaneLink = styled(Link)`
+  text-decoration: none;
+
+  &:hover > * {
+    border-color: ${palette.deepMagenta};
+    color: ${palette.deepMagenta};
+  }
+`;
+
 const Back = styled(Link)`
   font-size: 12px;
   font-weight: 600;
@@ -346,7 +362,22 @@ export default function TaskPage() {
             <Heading>{task.title}</Heading>
             <Meta>
               <Chip title={entry?.description}>{entry?.label ?? task.status}</Chip>
-              {row?.projectName ? <Chip>{row.projectName}</Chip> : <Hint>Not tied to a project</Hint>}
+              {/* A link, not a chip. This page tells you a task belongs to Qfeed and
+                  then leaves you to go and find Qfeed, which is a tab, a scroll and a
+                  chevron away - and the dates that explain why this task matters are
+                  all on that lane. The chip styling is kept so it still reads as one
+                  of the row of facts rather than as a stray link. */}
+              {row?.projectName ? (
+                task.project_id ? (
+                  <LaneLink to={`/?project=${encodeURIComponent(task.project_id)}`}>
+                    <Chip>{row.projectName} ↗</Chip>
+                  </LaneLink>
+                ) : (
+                  <Chip>{row.projectName}</Chip>
+                )
+              ) : (
+                <Hint>Not tied to a project</Hint>
+              )}
               {task.owner_email ? <Hint>{task.owner_email}</Hint> : null}
               {task.due ? (
                 <Due $overdue={isOverdue(task.due, today)}>Due {task.due}</Due>

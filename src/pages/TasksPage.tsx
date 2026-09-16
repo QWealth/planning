@@ -50,7 +50,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import styled from 'styled-components';
 
 import AssignAll from '../components/AssignAll';
@@ -172,6 +172,30 @@ const Groups = styled.div`
   overlay the columns of the section above while its own is scrolling past, which on a
   board of nine sections means something is always half-covered.
 */
+/*
+  Section heading to roadmap lane.
+
+  In the banner rather than on each card, because it is a fact about the project and
+  repeating it forty times down a column would make it furniture rather than a link.
+*/
+const LaneLink = styled(Link)`
+  font-size: 11px;
+  font-weight: 600;
+  color: ${palette.inkSoft};
+  text-decoration: none;
+  white-space: nowrap;
+
+  &:hover {
+    color: ${palette.deepMagenta};
+    text-decoration: underline;
+  }
+`;
+
+/** DOM id of a board section, so the roadmap can scroll to it. */
+export function sectionAnchorId(key: string): string {
+  return `board-${key}`;
+}
+
 const Banner = styled.div`
   display: flex;
   align-items: center;
@@ -380,6 +404,36 @@ export default function TasksPage() {
     setOpenGroups(defaultOpenGroups(groupTasks(tasks, projects), projects, identity.email));
   }, [identity, tasks, projects]);
 
+  /**
+   * `/tasks?project=<id>` — arriving from that project's lane on the roadmap.
+   *
+   * Opens the section and scrolls to it, IN ADDITION to whatever the seeding above
+   * opened. Arriving by link is not a reason to shut the sections somebody is on the
+   * hook for, and the alternative - landing on a board where the thing you clicked
+   * towards is collapsed and below the fold - is the same as not having linked.
+   *
+   * Its own one-shot, so a later render cannot re-open a section the viewer has since
+   * shut. The scroll waits a frame for the section to exist in the DOM, the same as
+   * the roadmap's.
+   */
+  const [params] = useSearchParams();
+  const linkedProject = params.get('project');
+  const jumped = useRef(false);
+
+  useEffect(() => {
+    if (jumped.current || !linkedProject || tasks === null) {
+      return;
+    }
+    jumped.current = true;
+    const key = groupKey(linkedProject);
+    setOpenGroups((current) => new Set(current).add(key));
+    requestAnimationFrame(() => {
+      document
+        .getElementById(sectionAnchorId(key))
+        ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+  }, [linkedProject, tasks]);
+
   const toggleGroup = useCallback((key: string) => {
     setOpenGroups((current) => {
       const next = new Set(current);
@@ -570,7 +624,10 @@ export default function TasksPage() {
           const key = groupKey(section.projectId);
           const open = openGroups.has(key);
           return (
-            <Panel key={key}>
+            /* The anchor a roadmap lane's Board link scrolls to. On the Panel rather
+               than on the Banner, so the heading is not flush against the top edge of
+               the viewport when it arrives. */
+            <Panel key={key} id={sectionAnchorId(key)}>
               <Banner>
                 {/*
                   The chart's own disclosure, not a second one: the banner already
@@ -591,6 +648,19 @@ export default function TasksPage() {
                 <Hint>
                   · {section.tasks.length} {section.tasks.length === 1 ? 'task' : 'tasks'}
                 </Hint>
+                {/* The other half of the round trip the roadmap's own "Board" link
+                    opens. The board says what is being done this week and the lane
+                    says when it was all supposed to happen, and until now the only
+                    route between the two was the tab bar and a scroll. Absent for the
+                    loose-tasks section, which belongs to no lane. */}
+                {section.projectId ? (
+                  <LaneLink
+                    to={`/?project=${encodeURIComponent(section.projectId)}`}
+                    title="Show this project on the roadmap"
+                  >
+                    On the roadmap ↗
+                  </LaneLink>
+                ) : null}
                 <Spacer />
                 {/*
                   Handed this section's own visible tasks, not its project id, so it can

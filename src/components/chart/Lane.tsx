@@ -21,6 +21,7 @@
  */
 
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import styled from 'styled-components';
 
 import { palette, radius, STATE_STYLE } from '../../styles/theme';
@@ -102,6 +103,32 @@ const NoDates = styled.span`
   white-space: nowrap;
 `;
 
+/*
+  The lane's way over to its tasks.
+
+  In the expanded lane's footer beside Add phase and Add milestone, because those are
+  the other three things somebody does once they have opened a lane and the footer is
+  already where the lane's own actions live. Not on the collapsed row: the roadmap is
+  read by scanning nine rows, and nine links across it is nine invitations to leave.
+
+  The pair of them - this, and the board section's "On the roadmap" - close a loop the
+  app did not have. The board says what is being done this week; the lane says when it
+  was all supposed to happen; and until now the only route between them was the tab bar
+  and a scroll, which is how the two drift apart.
+*/
+const BoardLink = styled(Link)`
+  font-size: 11px;
+  font-weight: 600;
+  color: ${palette.slateDeep};
+  text-decoration: none;
+  white-space: nowrap;
+
+  &:hover {
+    color: ${palette.deepMagenta};
+    text-decoration: underline;
+  }
+`;
+
 const SupportChip = styled(Chip)`
   position: absolute;
   top: 50%;
@@ -123,6 +150,8 @@ export interface LaneProps {
   project: Project;
   grid: Grid;
   people: Person[];
+  /** Categories already in use, for the inline editor's datalist. */
+  categories?: string[];
   today: string;
   expanded: boolean;
   onToggle: () => void;
@@ -148,6 +177,7 @@ export default function Lane({
   project,
   grid,
   people,
+  categories,
   today,
   expanded,
   onToggle,
@@ -429,6 +459,7 @@ export default function Lane({
           <ProjectEditor
             project={project}
             people={people}
+            categories={categories}
             onCancel={() => setEditingProject(false)}
             onSaved={(patch) => {
               onProjectSaved(project.project_id, patch);
@@ -574,6 +605,12 @@ export default function Lane({
           {project.milestones.length === 0 ? (
             <SubLabel>No milestones on this lane.</SubLabel>
           ) : null}
+          <BoardLink
+            to={`/tasks?project=${encodeURIComponent(project.project_id)}`}
+            title={`Open ${project.name} on the board`}
+          >
+            Tasks on the board ↗
+          </BoardLink>
         </AddRow>
       ) : null}
     </>

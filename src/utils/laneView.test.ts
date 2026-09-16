@@ -12,7 +12,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Phase, Project } from '../types';
-import { sortLanes, splitComplete } from './laneView';
+import { UNGROUPED, groupLanes, hasCategories, sortLanes, splitComplete } from './laneView';
 
 const TODAY = '2026-08-27';
 
@@ -198,3 +198,85 @@ describe('splitComplete', () => {
 function split0(project: Project): Project[] {
   return splitComplete([project], TODAY).complete;
 }
+
+describe('groupLanes', () => {
+  /** A project filed under a category. `proj` leaves it unset. */
+  const filed = (name: string, order: number, category: string | null): Project => ({
+    ...proj(name, order),
+    category,
+  });
+
+  it('puts lanes sharing a category under one group', () => {
+    const groups = groupLanes([
+      filed('QWAPP', 0, 'App'),
+      filed('Qfeed', 1, 'Data'),
+      filed('QWAPP Expansion Packs', 2, 'App'),
+    ]);
+    expect(groups.map((g) => g.category)).toEqual(['App', 'Data']);
+    expect(groups[0].projects.map((p) => p.name)).toEqual([
+      'QWAPP',
+      'QWAPP Expansion Packs',
+    ]);
+  });
+
+  it('orders groups by first appearance, not alphabetically', () => {
+    // The incoming order is already the answer to "how should these be arranged" -
+    // either lane_order or the sort somebody chose. Alphabetising the headings on top
+    // of it would move a whole group the first time anybody renamed a category.
+    const groups = groupLanes([filed('Z', 0, 'Zebra'), filed('A', 1, 'Apple')]);
+    expect(groups.map((g) => g.category)).toEqual(['Zebra', 'Apple']);
+  });
+
+  it('preserves the incoming order within a group', () => {
+    // Grouping composes with the sort rather than overriding it: grouped-and-by-name
+    // means each category's lanes are ordered by name.
+    const groups = groupLanes([
+      filed('B', 0, 'App'),
+      filed('A', 1, 'App'),
+    ]);
+    expect(groups[0].projects.map((p) => p.name)).toEqual(['B', 'A']);
+  });
+
+  it('puts unfiled lanes last, under one heading', () => {
+    // "Everything else" above three named groups reads as a filing failure at the top
+    // of the page; below them it reads as the remainder, which is what it is.
+    const groups = groupLanes([
+      filed('Loose', 0, null),
+      filed('QWAPP', 1, 'App'),
+      filed('Also loose', 2, '   '),
+    ]);
+    expect(groups.map((g) => g.category)).toEqual(['App', UNGROUPED]);
+    expect(groups[1].projects.map((p) => p.name)).toEqual(['Loose', 'Also loose']);
+  });
+
+  it('loses nobody', () => {
+    const projects = [
+      filed('a', 0, 'App'),
+      filed('b', 1, null),
+      filed('c', 2, 'Data'),
+      filed('d', 3, 'App'),
+    ];
+    const seen = groupLanes(projects).flatMap((g) => g.projects.map((p) => p.name));
+    expect(seen.sort()).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('handles an empty roadmap', () => {
+    expect(groupLanes([])).toEqual([]);
+  });
+});
+
+describe('hasCategories', () => {
+  it('is false when nobody has filed anything', () => {
+    // A "Group by category" toggle here would draw one heading over the whole list,
+    // which is a promise of an arrangement the data cannot deliver.
+    expect(hasCategories([proj('A', 0), proj('B', 1)])).toBe(false);
+  });
+
+  it('ignores whitespace-only categories', () => {
+    expect(hasCategories([{ ...proj('A', 0), category: '  ' }])).toBe(false);
+  });
+
+  it('is true as soon as one lane is filed', () => {
+    expect(hasCategories([proj('A', 0), { ...proj('B', 1), category: 'Data' }])).toBe(true);
+  });
+});

@@ -20,6 +20,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import styled from 'styled-components';
 
 import Legend from '../components/Legend';
@@ -28,11 +29,19 @@ import { useIdentity } from '../components/AppShell';
 import Timeline, { laneAnchorId } from '../components/chart/Timeline';
 import { describeError, getRoadmap, saveLaneOrder } from '../services/api';
 import { palette } from '../styles/theme';
-import { ErrorText, Hint, Panel, PrimaryButton, SecondaryButton, Select } from '../styles/ui';
+import {
+  ErrorText,
+  Hint,
+  Panel,
+  PrimaryButton,
+  SecondaryButton,
+  Select,
+  ToggleButton,
+} from '../styles/ui';
 import type { Milestone, Phase, Project, ProjectPatch, Roadmap } from '../types';
 import { buildGrid, todayISO } from '../utils/dates';
 import { laneOrderChanges, moveLane } from '../utils/laneOrder';
-import { SORT_OPTIONS, sortLanes, splitComplete } from '../utils/laneView';
+import { SORT_OPTIONS, hasCategories, sortLanes, splitComplete } from '../utils/laneView';
 import type { SortMode } from '../utils/laneView';
 import { milestoneDates, sortMilestones } from '../utils/milestones';
 import { responsibleProjectIds } from '../utils/projects';
@@ -183,6 +192,45 @@ export default function RoadmapPage() {
       setExpanded(mine);
     }
   }, [identity, roadmap]);
+
+  /**
+   * `/?project=<id>` — somebody arriving from somewhere else in the app.
+   *
+   * The board, the roster and the milestone log all link here by project id, because
+   * all three are places you notice something and this is the place you do something
+   * about it. Landing on the roadmap scrolled to the top, with the lane in question
+   * somewhere below the fold and shut, is the same as not having linked at all.
+   *
+   * Runs on its own one-shot rather than folding into the seeding above, and the order
+   * matters: this opens the lane IN ADDITION to whatever the seed opened, because
+   * arriving by link is not a reason to close the two lanes you are answerable for.
+   *
+   * The scroll is deferred a frame for the reason onProjectCreated's is - the lane has
+   * to be in the DOM before getElementById can find it - and it is `smooth` and
+   * `center` for the same reason: landing hard at the top edge reads as a page load
+   * rather than as an arrival at something.
+   */
+  const [params] = useSearchParams();
+  const linkedProject = params.get('project');
+  const jumped = useRef(false);
+
+  useEffect(() => {
+    if (jumped.current || !linkedProject || !roadmap) {
+      return;
+    }
+    // Only for a lane that is actually here. A stale link to a deleted project
+    // silently does nothing, which is better than scrolling somewhere arbitrary.
+    if (!roadmap.projects.some((p) => p.project_id === linkedProject)) {
+      return;
+    }
+    jumped.current = true;
+    setExpanded((current) => new Set(current).add(linkedProject));
+    requestAnimationFrame(() => {
+      document
+        .getElementById(laneAnchorId(linkedProject))
+        ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    });
+  }, [linkedProject, roadmap]);
 
   /**
    * Rewrite one lane in place, leaving the rest of the roadmap alone.
@@ -515,7 +563,46 @@ export default function RoadmapPage() {
     place it does not visibly occupy - and the save would write an arrangement nobody
     could see they were making. Disabled with the reason stated, rather than hidden.
   */
-  const canReorder = sortMode === 'roadmap';
+  /*
+    Whether grouping is worth offering, and whether it is on.
+
+    Offered only once somebody has filed something. A "Group by category" toggle on a
+    roadmap where nothing is categorised does exactly one thing - draw a single heading
+    reading "Everything else" over the whole list - which is a promise of an
+    arrangement the data cannot deliver.
+
+    Default ON once the data supports it, because somebody who has gone and filed nine
+    lanes did it in order to see them grouped, and making them find a toggle
+    afterwards is asking them to ask for what they already asked for.
+  */
+  const groupable = useMemo(() => hasCategories(stored), [stored]);
+  const [grouping, setGrouping] = useState(true);
+  const grouped = groupable && grouping;
+
+  /*
+    Every category in use, for the editor's datalist. Sorted, because this one IS a
+    plain list rather than an arrangement of the roadmap - nothing about the order of
+    a set of suggestions carries meaning, and alphabetical is the order somebody
+    scanning for "did we already call it Data?" can actually scan.
+  */
+  const categories = useMemo(() => {
+    const seen = new Set<string>();
+    for (const project of stored) {
+      const category = (project.category ?? '').trim();
+      if (category) {
+        seen.add(category);
+      }
+    }
+    return [...seen].sort((a, b) => a.localeCompare(b));
+  }, [stored]);
+
+  /*
+    Reorder is off while grouped, for the reason it is already off under a sort: "move
+    up" means "give this a lower lane_order", and under a heading the arrow would move
+    a row across a boundary lane_order knows nothing about - so the lane would either
+    jump to another group or refuse to move, and neither is what the arrow promises.
+  */
+  const canReorder = sortMode === 'roadmap' && !grouped;
 
   return (
     <>
@@ -603,10 +690,22 @@ export default function RoadmapPage() {
               the control announced itself as a sentence of explanation rather than as
               "Reorder".
             */}
+            {/* Offered only when it would show something. See `groupable`. */}
+            {groupable ? (
+              <ToggleButton
+                type="button"
+                $on={grouping}
+                aria-pressed={grouping}
+                onClick={() => setGrouping((on) => !on)}
+              >
+                Group by category
+              </ToggleButton>
+            ) : null}
             {!canReorder && projects.length >= 2 ? (
               <Hint>
-                Sorted by {SORT_OPTIONS.find((o) => o.mode === sortMode)?.label}. Switch to
-                Roadmap order to rearrange.
+                {grouped
+                  ? 'Grouped by category. Turn grouping off to rearrange.'
+                  : `Sorted by ${SORT_OPTIONS.find((o) => o.mode === sortMode)?.label}. Switch to Roadmap order to rearrange.`}
               </Hint>
             ) : null}
           </>
@@ -626,6 +725,7 @@ export default function RoadmapPage() {
           <ProjectEditor
             project={null}
             people={roadmap?.people ?? []}
+            categories={categories}
             nextLaneOrder={nextLaneOrder}
             onCreated={onProjectCreated}
             onCancel={() => setAddingProject(false)}
@@ -640,11 +740,13 @@ export default function RoadmapPage() {
           <Timeline
             projects={projects}
             people={roadmap?.people ?? []}
+            categories={categories}
             grid={grid}
             today={today}
             expanded={expanded}
             onToggle={toggle}
             onMoveProject={reordering ? onMoveProject : null}
+            grouped={grouped}
             onPhaseSaved={onPhaseSaved}
             onPhaseDeleted={onPhaseDeleted}
             onMilestoneSaved={onMilestoneSaved}
@@ -676,6 +778,7 @@ export default function RoadmapPage() {
           <Timeline
             projects={complete}
             people={roadmap?.people ?? []}
+            categories={categories}
             grid={grid}
             today={today}
             expanded={expanded}

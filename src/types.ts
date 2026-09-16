@@ -96,6 +96,20 @@ export interface ProjectSummary {
   dri_email: string | null;
   support_email: string | null;
   active: boolean;
+  /**
+   * What kind of work this lane is — "App", "Data", "QC". The roadmap groups by it.
+   *
+   * Free text, authored by the team rather than enumerated, which is the opposite of
+   * how roles and skills work. Those vocabularies were knowable in advance; this one
+   * is not, and inventing it from a reading of nine project names would be a guess at
+   * an org chart the app does not model. The editor offers every value already in
+   * use, which is what keeps "Data" from becoming "data" and "DATA".
+   *
+   * Null is a real state and means nobody has filed it — every project predates the
+   * field. Optional as well as nullable, because a backend deployed before it existed
+   * omits it entirely.
+   */
+  category?: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -642,6 +656,8 @@ export interface ProjectPatch {
   dri_email?: string | null;
   support_email?: string | null;
   active?: boolean;
+  /** Empty string clears it — the API turns that into a real null. */
+  category?: string | null;
 }
 
 /**
@@ -844,6 +860,7 @@ export interface ProjectCreate {
   dri_email?: string | null;
   support_email?: string | null;
   active?: boolean;
+  category?: string | null;
   phases?: PhaseCreate[];
   milestones?: MilestoneCreate[];
 }

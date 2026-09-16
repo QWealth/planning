@@ -195,3 +195,51 @@ def test_missing_project_is_none_not_an_empty_shell(aws):
     empty lane instead of a 404.
     """
     assert q.get_project("does-not-exist") is None
+
+
+# --- the category, which groups lanes on the roadmap -------------------------
+
+
+def test_a_project_can_be_filed_under_a_category(aws) -> None:
+    from app.db.queries import projects as q
+
+    created = q.create_project(name="QWAPP", category="App")
+    assert created["category"] == "App"
+    assert q.get_project(created["project_id"])["category"] == "App"
+
+
+def test_a_project_with_no_category_is_a_real_state(aws) -> None:
+    # Every project predates this field, so absent means "not filed" rather than an
+    # error - the same rule roles and specialisations already follow.
+    from app.db.queries import projects as q
+
+    assert q.create_project(name="Tax")["category"] is None
+
+
+def test_the_category_is_trimmed_but_not_lowercased(client) -> None:
+    """
+    The difference between a key and a label. It is drawn as a group heading in the
+    user's own capitalisation, so "Data" must survive - but " Data" and "Data" as two
+    headings is exactly what the editor's datalist exists to prevent, and trailing
+    whitespace would be invisible in the input.
+    """
+    response = client.post("/api/projects", json={"name": "Qfeed", "category": "  Data "})
+    assert response.status_code == 201
+    assert response.json()["category"] == "Data"
+
+
+def test_an_empty_category_becomes_null(client) -> None:
+    # What an HTML form sends for "nothing chosen". Left alone it would be a group
+    # heading with no name.
+    response = client.post("/api/projects", json={"name": "Tax", "category": "   "})
+    assert response.json()["category"] is None
+
+
+def test_the_category_can_be_changed_and_cleared(client) -> None:
+    project_id = client.post("/api/projects", json={"name": "D2"}).json()["project_id"]
+
+    patched = client.patch(f"/api/projects/{project_id}", json={"category": "Data"})
+    assert patched.json()["category"] == "Data"
+
+    cleared = client.patch(f"/api/projects/{project_id}", json={"category": ""})
+    assert cleared.json()["category"] is None

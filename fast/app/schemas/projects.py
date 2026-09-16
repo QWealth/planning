@@ -215,6 +215,27 @@ class ProjectBase(BaseModel):
     dri_email: Optional[str] = None
     support_email: Optional[str] = None
     active: bool = True
+    # What kind of work this lane is. Free text, authored by the team rather than
+    # enumerated here - see the note on `category` in db/models.py for why this one
+    # list is open when roles and skills are closed. Capped short because it is a
+    # heading, and a heading that wraps is a heading nobody grouped anything under.
+    category: Optional[str] = Field(default=None, max_length=40)
+
+    @field_validator("category")
+    @classmethod
+    def normalise_category(cls, value: Optional[str]) -> Optional[str]:
+        """
+        Trimmed, with an empty string becoming a real null.
+
+        NOT lowercased, unlike the addresses below, and that is the whole difference
+        between a key and a label: this is drawn as a group heading in the user's own
+        capitalisation. Trailing whitespace is removed because " Data" and "Data" as
+        two headings is the exact failure the editor's datalist exists to prevent, and
+        it would be invisible in the input.
+        """
+        if value is None:
+            return None
+        return value.strip() or None
 
     @field_validator("dri_email", "support_email")
     @classmethod
@@ -248,6 +269,15 @@ class ProjectUpdate(BaseModel):
     dri_email: Optional[str] = None
     support_email: Optional[str] = None
     active: Optional[bool] = None
+    category: Optional[str] = Field(default=None, max_length=40)
+
+    @field_validator("category")
+    @classmethod
+    def normalise_category(cls, value: Optional[str]) -> Optional[str]:
+        """Trimmed, never lowercased. See ProjectBase for the difference."""
+        if value is None:
+            return None
+        return value.strip() or None
 
     @field_validator("dri_email", "support_email")
     @classmethod

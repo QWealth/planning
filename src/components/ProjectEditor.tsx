@@ -30,6 +30,7 @@ import type { PhaseCreate, Person, Project, ProjectPatch } from '../types';
 
 interface FormValues {
   name: string;
+  category: string;
   dri_email: string;
   support_email: string;
   active: boolean;
@@ -119,6 +120,12 @@ export function buildProjectPatch(
   if (dirty.active) {
     patch.active = values.active;
   }
+  if (dirty.category) {
+    // Trimmed here as well as on the server, so the value posted matches the value
+    // that comes back and the group heading does not shift after a save. Empty string
+    // rather than undefined: it has to reach the API, which turns it into a real null.
+    patch.category = values.category.trim();
+  }
   return patch;
 }
 
@@ -131,7 +138,18 @@ export function buildProjectPatch(
  * as a union rather than two optional callbacks makes using the wrong one a compile
  * error instead of a lane that quietly empties itself.
  */
-export type ProjectEditorProps = { people: Person[]; onCancel: () => void } & (
+export type ProjectEditorProps = {
+  people: Person[];
+  /**
+   * Every category already in use on the roadmap, for the datalist below.
+   *
+   * Passed in rather than fetched, because the caller already has every project and a
+   * second request to learn something it is holding would be a round trip for nothing.
+   * Optional so the component still renders for a caller that has not got them yet.
+   */
+  categories?: string[];
+  onCancel: () => void;
+} & (
   | {
       project: Project;
       onSaved: (patch: ProjectPatch) => void;
@@ -165,7 +183,7 @@ function OwnerOptions({ people, current }: { people: Person[]; current: string |
 }
 
 export default function ProjectEditor(props: ProjectEditorProps) {
-  const { project, people, onCancel } = props;
+  const { project, people, categories = [], onCancel } = props;
   const [error, setError] = useState<string | null>(null);
 
   const {
@@ -175,6 +193,7 @@ export default function ProjectEditor(props: ProjectEditorProps) {
   } = useForm<FormValues>({
     defaultValues: {
       name: project?.name ?? '',
+      category: project?.category ?? '',
       dri_email: project?.dri_email ?? '',
       support_email: project?.support_email ?? '',
       active: project?.active ?? true,
@@ -189,6 +208,7 @@ export default function ProjectEditor(props: ProjectEditorProps) {
         props.onCreated(
           await createProject({
             name: values.name.trim(),
+            category: values.category.trim() || null,
             lane_order: props.nextLaneOrder,
             dri_email: values.dri_email.trim().toLowerCase() || null,
             support_email: values.support_email.trim().toLowerCase() || null,
@@ -227,6 +247,34 @@ export default function ProjectEditor(props: ProjectEditorProps) {
           autoFocus={!project}
         />
       </Label>
+
+      {/*
+        The category, as a text input with a datalist rather than a <select>.
+
+        A select would need a closed list, and nobody can write that list from here -
+        see the note on `category` in types.ts. An input alone would give "Data",
+        "data" and "DATA" as three headings within a week. The datalist is the middle:
+        typing offers what is already in use, so the second project reuses the first's
+        spelling, and a genuinely new category is still one you can just type.
+
+        No `required`. A project nobody has filed is a real state and the roadmap has
+        a place for it - see UNGROUPED in utils/laneView.ts.
+      */}
+      <Label>
+        Category
+        <Input
+          {...register('category', { maxLength: 40 })}
+          list="project-categories"
+          placeholder="e.g. App, Data, QC"
+          autoComplete="off"
+        />
+        <datalist id="project-categories">
+          {categories.map((category) => (
+            <option key={category} value={category} />
+          ))}
+        </datalist>
+      </Label>
+      <Hint>Groups this lane with others like it on the roadmap. Leave it blank to file it later.</Hint>
 
       <Label>
         DRI

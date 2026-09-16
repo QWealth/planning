@@ -37,7 +37,14 @@ dynamodb = boto3.resource("dynamodb", region_name=config.AWS_REGION)
 # the dict": the update dicts arrive from Pydantic models today, but this function
 # is one careless caller away from being handed a raw request body, and an
 # unfiltered SET would let that body overwrite project_id, sk or created_at.
-PROJECT_UPDATABLE = {"name", "lane_order", "dri_email", "support_email", "active"}
+PROJECT_UPDATABLE = {
+    "name",
+    "lane_order",
+    "dri_email",
+    "support_email",
+    "active",
+    "category",
+}
 PHASE_UPDATABLE = {
     "name",
     "phase_order",
@@ -196,6 +203,7 @@ def create_project(
     dri_email: Optional[str] = None,
     support_email: Optional[str] = None,
     active: bool = True,
+    category: Optional[str] = None,
     phases: Optional[list[dict[str, Any]]] = None,
     milestones: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
@@ -209,6 +217,7 @@ def create_project(
         dri_email=dri_email,
         support_email=support_email,
         active=active,
+        category=category,
     )
 
     phase_items = []

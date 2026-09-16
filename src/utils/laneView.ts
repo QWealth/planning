@@ -175,3 +175,81 @@ export function splitComplete(projects: Project[], today: string): LaneSplit {
 
   return { live, complete };
 }
+
+/*
+  ---------------------------------------------------------------- grouping
+
+  The third view-only arrangement, and the same rule applies: nothing here is stored
+  and nothing here renumbers anybody. `category` is a stored field on the project, but
+  whether the roadmap is currently drawn grouped by it is a choice the reader makes.
+*/
+
+/** The heading shown over projects that have not been filed under anything. */
+export const UNGROUPED = 'Everything else';
+
+export interface LaneGroup {
+  /** The category, or UNGROUPED. Drawn as the heading. */
+  category: string;
+  projects: Project[];
+}
+
+/**
+ * Split an already-sorted list into runs, one per category.
+ *
+ * Takes the list AFTER sortLanes rather than sorting it itself, so grouping composes
+ * with whichever sort is on rather than overriding it: grouped-and-by-progress means
+ * each category's lanes are ordered by progress, which is what somebody who picked
+ * both would expect. Doing the sort in here would quietly make the sort control a
+ * no-op while grouping was on.
+ *
+ * GROUP ORDER IS FIRST APPEARANCE, NOT ALPHABETICAL. The incoming order is already
+ * the answer to "how should these be arranged" - it is either the team's own
+ * lane_order or the sort they chose - and alphabetising the headings on top of it
+ * would put "App" above "QC" for a reason nobody asked for, and would move a whole
+ * group the first time somebody renamed a category.
+ *
+ * UNGROUPED IS ALWAYS LAST, which is the one exception to that rule. A group headed
+ * "Everything else" above three named ones reads as a filing failure at the top of the
+ * page; below them it reads as the remainder, which is what it is. It is also the pile
+ * that shrinks as people file things, so it is the one that should not be in the way.
+ */
+export function groupLanes(projects: Project[]): LaneGroup[] {
+  const groups = new Map<string, Project[]>();
+
+  for (const project of projects) {
+    // Trimmed on the way in by the API, so this is only guarding against a stored
+    // value from before that validator existed.
+    const category = (project.category ?? '').trim() || UNGROUPED;
+    const existing = groups.get(category);
+    if (existing) {
+      existing.push(project);
+    } else {
+      groups.set(category, [project]);
+    }
+  }
+
+  const named: LaneGroup[] = [];
+  let leftovers: LaneGroup | null = null;
+  for (const [category, list] of groups) {
+    const group = { category, projects: list };
+    if (category === UNGROUPED) {
+      leftovers = group;
+    } else {
+      named.push(group);
+    }
+  }
+
+  return leftovers ? [...named, leftovers] : named;
+}
+
+/**
+ * Whether grouping would show anything, which is whether anybody has filed anything.
+ *
+ * Used to decide whether to offer the control at all. A "Group by category" toggle on
+ * a roadmap where every project is uncategorised does exactly one thing - draw one
+ * heading reading "Everything else" over the whole list - and offering it is a promise
+ * of an arrangement the data cannot deliver.
+ */
+export function hasCategories(projects: Project[]): boolean {
+  return projects.some((p) => (p.category ?? '').trim().length > 0);
+}

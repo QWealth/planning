@@ -158,6 +158,7 @@ class ProjectModel:
         dri_email: Optional[str] = None,
         support_email: Optional[str] = None,
         active: bool = True,
+        category: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Build a project item.
@@ -177,6 +178,23 @@ class ProjectModel:
             "dri_email": dri_email,
             "support_email": support_email,
             "active": active,
+            # What kind of work this lane is - "App", "Data", "QC". FREE TEXT, and
+            # deliberately not a closed list, which is the opposite of what roles.py
+            # and skills.py argue for.
+            #
+            # Those lists are closed because the vocabulary was known: somebody could
+            # write down the seven roles and be right. Nobody can write down this one
+            # from here. Inventing "App / Data / QC / Reporting" by reading nine
+            # project names would be exactly the plausible-looking guess at an org
+            # chart that roles.py refuses to make when it declines to split
+            # outside-engineering into four.
+            #
+            # So the team authors it by using it, and the editor offers every value
+            # already in use so the second project reuses the first's spelling rather
+            # than retyping it. That is what keeps "Data" from becoming "data" and
+            # "DATA" - a datalist rather than an enum, because the enum would have to
+            # be guessed first. Null is a real state and means nobody has filed it.
+            "category": category,
             "created_at": now,
             "updated_at": now,
         }
@@ -191,6 +209,10 @@ class ProjectModel:
             "dri_email": item.get("dri_email") or None,
             "support_email": item.get("support_email") or None,
             "active": item.get("active", True),
+            # Empty string reads as None. Every project predates this field, so absent
+            # has to mean "not filed" rather than an error - the same rule roles and
+            # specialisations already follow.
+            "category": item.get("category") or None,
             "created_at": item.get("created_at"),
             "updated_at": item.get("updated_at"),
         }

@@ -89,6 +89,7 @@ async def create_project(
             dri_email=body.dri_email,
             support_email=body.support_email,
             active=body.active,
+            category=body.category,
             phases=[p.model_dump() for p in body.phases],
             milestones=[m.model_dump() for m in body.milestones],
         )
