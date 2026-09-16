@@ -43,7 +43,7 @@ import {
   getTaskStatuses,
   getTasks,
 } from '../services/api';
-import { palette, radius } from '../styles/theme';
+import { displayHeading, palette, radius } from '../styles/theme';
 import {
   Chip,
   DangerButton,
@@ -65,6 +65,7 @@ const Head = styled.div`
 `;
 
 const Heading = styled.h2`
+  ${displayHeading};
   font-size: 20px;
   color: ${palette.deepMagenta};
   margin: 0;

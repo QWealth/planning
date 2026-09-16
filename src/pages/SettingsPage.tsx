@@ -42,12 +42,13 @@ import {
   getPerson,
   patchPerson,
 } from '../services/api';
-import { monoStack, palette, radius } from '../styles/theme';
+import { displayHeading, monoStack, palette, radius } from '../styles/theme';
 import { Chip, ErrorText, Hint, Panel, ToggleButton } from '../styles/ui';
 import { DIGEST_WINDOWS } from '../types';
 import type { DigestPreview, Features, Person } from '../types';
 
 const Head = styled.h2`
+  ${displayHeading};
   font-size: 14px;
   color: ${palette.deepMagenta};
   margin: 0 0 8px;

@@ -32,7 +32,7 @@ import styled from 'styled-components';
 
 import { useIdentity } from '../components/AppShell';
 import { describeError, getPerson, getRfcStatuses, getRfcs, getRoadmap } from '../services/api';
-import { palette, radius } from '../styles/theme';
+import { displayHeading, palette, radius } from '../styles/theme';
 import { Chip, ErrorText, Hint, Panel, PrimaryButton, ToggleButton } from '../styles/ui';
 import type { Project, Rfc, StatusInfo } from '../types';
 import { groupRfcs, rfcSummary } from '../utils/rfcs';
@@ -60,6 +60,7 @@ const Groups = styled.div`
 `;
 
 const GroupHead = styled.h2`
+  ${displayHeading};
   font-size: 14px;
   color: ${palette.deepMagenta};
   margin: 0 0 8px;
@@ -94,7 +95,7 @@ const Row = styled(Link)<{ $unread: boolean }>`
   display: block;
   text-decoration: none;
   color: inherit;
-  border: 1px solid ${(p) => (p.$unread ? palette.deepMagenta : palette.border)};
+  border: 1px solid ${(p) => (p.$unread ? palette.plum : palette.border)};
   border-left-width: ${(p) => (p.$unread ? '4px' : '1px')};
   border-radius: ${radius.md};
   background: ${palette.card};
@@ -122,7 +123,7 @@ const RowHead = styled.div`
 const RowTitle = styled.span<{ $unread: boolean }>`
   font-weight: 700;
   font-size: 14px;
-  color: ${(p) => (p.$unread ? palette.deepMagenta : palette.ink)};
+  color: ${(p) => (p.$unread ? palette.plum : palette.ink)};
 `;
 
 const Summary = styled.p`

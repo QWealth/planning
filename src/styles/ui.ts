@@ -96,12 +96,19 @@ const buttonBase = css`
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  border-radius: ${radius.pill};
-  padding: 7px 14px;
+  font-size: 12px;
+  /* Heavy and uppercase - decision 4. .1em tracking is the sheet's value for small
+     labels, and a button label is one. */
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  /* The sheet's dedicated button radius, not the pill. */
+  border-radius: ${radius.lg};
+  padding: 8px 16px;
   cursor: pointer;
-  border: 1px solid transparent;
+  /* 2px keyline: the small-object weight from decision 1. Navy on every button,
+     whatever the fill, because one ink colour outlines everything. */
+  border: 2px solid ${palette.borderStrong};
   transition: background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
 
   &:disabled {
@@ -109,8 +116,16 @@ const buttonBase = css`
     cursor: not-allowed;
   }
 
+  /*
+    Pressed moves the button INTO its own shadow rather than merely down.
+
+    With a hard offset shadow the two have to move together - translating the button
+    while the shadow stays put reads as the object tearing away from its outline, which
+    is the one motion this family cannot do.
+  */
   &:not(:disabled):active {
-    transform: translateY(1px);
+    transform: translate(2px, 2px);
+    box-shadow: none;
   }
 `;
 
@@ -118,7 +133,8 @@ export const PrimaryButton = styled.button`
   ${buttonBase};
   background: ${palette.hotPink};
   color: ${palette.onAccent};
-  box-shadow: ${shadow.card};
+  /* The smaller hard offset. A card's 6px under a button reads as a floating slab. */
+  box-shadow: ${shadow.mark};
 
   &:not(:disabled):hover {
     background: ${palette.deepMagenta};
@@ -128,8 +144,8 @@ export const PrimaryButton = styled.button`
 export const SecondaryButton = styled.button`
   ${buttonBase};
   background: ${palette.card};
-  color: ${palette.deepMagenta};
-  border-color: ${palette.borderStrong};
+  color: ${palette.ink};
+  box-shadow: ${shadow.mark};
 
   &:not(:disabled):hover {
     background: ${palette.blush};
@@ -163,12 +179,17 @@ export const DangerButton = styled(SecondaryButton)`
  */
 export const ToggleButton = styled.button<{ $on: boolean }>`
   ${buttonBase};
-  background: ${(p) => (p.$on ? palette.deepMagenta : palette.card)};
-  color: ${(p) => (p.$on ? palette.onAccent : palette.inkSoft)};
-  border-color: ${(p) => (p.$on ? palette.deepMagenta : palette.border)};
+  /*
+    On is TEAL, not red. Decision 5 gives red to primary actions and headings and teal
+    to focus, success and the CHECKED STATE, and the two never swap jobs - a red "on"
+    would read as a warning rather than as a thing that is switched on.
+  */
+  background: ${(p) => (p.$on ? palette.turquoise : palette.card)};
+  color: ${(p) => (p.$on ? '#141A3B' : palette.inkSoft)};
+  box-shadow: ${shadow.mark};
 
   &:not(:disabled):hover {
-    background: ${(p) => (p.$on ? palette.deepMagenta : palette.blush)};
+    background: ${(p) => (p.$on ? palette.turquoise : palette.blush)};
   }
 `;
 
@@ -177,11 +198,14 @@ export const Chip = styled.span`
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
-  font-weight: 600;
-  color: ${palette.deepMagenta};
-  background: ${palette.blush};
-  border: 1px solid ${palette.border};
+  font-size: 10px;
+  /* A chip is a small label: heavy, uppercase, .1em - decision 4. */
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: ${palette.ink};
+  background: ${palette.card};
+  border: 2px solid ${palette.borderStrong};
   border-radius: ${radius.pill};
   padding: 3px 10px;
   white-space: nowrap;
@@ -200,8 +224,9 @@ export const Label = styled.label`
   flex-direction: column;
   gap: 4px;
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-weight: 800;
+  /* The sheet's small-label tracking. */
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: ${palette.inkSoft};
 `;

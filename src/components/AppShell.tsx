@@ -25,7 +25,7 @@ import { NavLink, Outlet, useOutletContext } from 'react-router-dom';
 import styled from 'styled-components';
 
 import { describeError, getIdentity } from '../services/api';
-import { palette, radius } from '../styles/theme';
+import { displayStack, palette, radius } from '../styles/theme';
 import { ErrorText, Panel, PageLoading, SecondaryButton } from '../styles/ui';
 import type { Identity } from '../types';
 import type { AuthState } from './LoginGate';
@@ -47,8 +47,19 @@ const Masthead = styled.header`
   flex-wrap: wrap;
 `;
 
+/*
+  The masthead, and the one place the display face is unmistakable.
+
+  Heavy, uppercase, .02em - the heading tracking from decision 4, which is tighter than
+  the .1em used on small labels. Red rather than ink, because decision 5 gives red to
+  headings as well as to primary actions.
+*/
 const Title = styled.h1`
-  font-size: 26px;
+  font-family: ${displayStack};
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
   color: ${palette.deepMagenta};
   margin: 0;
 `;
