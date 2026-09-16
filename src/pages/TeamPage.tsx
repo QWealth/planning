@@ -846,7 +846,8 @@ export default function TeamPage() {
 
       {view === 'schedule' ? (
         <ChartPanel>
-          <PanelTitle>Who is doing what, when</PanelTitle>
+          {/* No heading. The Schedule button directly above is lit, which already says
+              what this panel is, and a title under it was the same answer twice. */}
           {/* An empty chart is an ANSWER - "nobody here holds anything dated" - so it
               must not be shown before the answer is known. In flight the grid is one
               week wide and every row is missing, which renders as that same confident
