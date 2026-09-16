@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { PersonWorkload } from '../types';
-import { holdsNothing, isObserver, splitObservers } from './observers';
+import {
+  holdsNothing,
+  isLeadershipOnly,
+  isObserver,
+  schedulable,
+  splitObservers,
+} from './observers';
 
 function person(overrides: Partial<PersonWorkload> = {}): PersonWorkload {
   return {
@@ -119,5 +125,74 @@ describe('splitObservers', () => {
     expect(split.roster.length + split.observers.length).toBe(people.length);
     const seen = [...split.roster, ...split.observers].map((p) => p.email).sort();
     expect(seen).toEqual(['1@x.invalid', '2@x.invalid', '3@x.invalid', '4@x.invalid']);
+  });
+});
+
+describe('isLeadershipOnly', () => {
+  it('is true for somebody whose only role is leadership and who holds nothing', () => {
+    expect(isLeadershipOnly(person({ roles: ['leadership'] }))).toBe(true);
+  });
+
+  it('is false once they hold anything', () => {
+    // The safety condition, and the one that matters: a leader who is DRI of a lane
+    // stays on the schedule, or the chart goes quiet about real accountability.
+    expect(
+      isLeadershipOnly(person({ roles: ['leadership'], dri_project_ids: ['p1'] }))
+    ).toBe(false);
+    expect(
+      isLeadershipOnly(person({ roles: ['leadership'], support_project_ids: ['p1'] }))
+    ).toBe(false);
+    expect(
+      isLeadershipOnly(person({ roles: ['leadership'], owned_phase_count: 1 }))
+    ).toBe(false);
+  });
+
+  it('is false when leadership is one role among several', () => {
+    // A lead who also builds is somebody you can staff work to. The narrower claim
+    // wins, same as it does for observers.
+    expect(isLeadershipOnly(person({ roles: ['leadership', 'software-engineer'] }))).toBe(
+      false
+    );
+  });
+
+  it('is false for nobody-recorded-this', () => {
+    // An empty roles list is the workbook-seeded state, not a claim about the person.
+    expect(isLeadershipOnly(person({ roles: [] }))).toBe(false);
+  });
+
+  it('does not make somebody an observer', () => {
+    // Leadership is a delivery role. It changes the schedule, never the roster split.
+    const lead = person({ roles: ['leadership'] });
+    expect(isObserver(lead)).toBe(false);
+    expect(splitObservers([lead]).roster).toHaveLength(1);
+  });
+});
+
+describe('schedulable', () => {
+  it('includes somebody holding nothing', () => {
+    // The point of the change: free weeks are the answer to "who could take this".
+    expect(schedulable(person({ roles: ['software-engineer'] }))).toBe(true);
+  });
+
+  it('excludes observers and leadership-only, and nobody else', () => {
+    const people = [
+      person({ email: 'eng@x.invalid', roles: ['software-engineer'] }),
+      person({ email: 'obs@x.invalid', roles: ['outside-engineering'] }),
+      person({ email: 'lead@x.invalid', roles: ['leadership'] }),
+      person({ email: 'unset@x.invalid', roles: [] }),
+    ];
+    expect(people.filter(schedulable).map((p) => p.email)).toEqual([
+      'eng@x.invalid',
+      'unset@x.invalid',
+    ]);
+  });
+
+  it('keeps an excluded role on the chart as soon as they hold something', () => {
+    expect(
+      schedulable(person({ roles: ['leadership'], owned_phase_count: 2 }))
+    ).toBe(true);
+    expect(
+      schedulable(person({ roles: ['outside-engineering'], dri_project_ids: ['p1'] }))
+    ).toBe(true);
   });
 });

@@ -74,6 +74,46 @@ export function isObserver(person: PersonWorkload): boolean {
   );
 }
 
+/** The other role that is never an answer to "who could take this". */
+export const LEADERSHIP = 'leadership';
+
+/**
+ * Sole-role leadership, holding nothing.
+ *
+ * Deliberately the SAME SHAPE as isObserver - sole role, and the holds-nothing safety
+ * condition - because it is the same claim about a different role, and two rules that
+ * mean "not staffable" should not be written two different ways. A leader who is DRI
+ * of a lane stays on the schedule, for exactly the reason in the header: a role
+ * describes a person and is never allowed to conceal work.
+ *
+ * It does NOT make somebody an observer. Leadership is a delivery role - it belongs on
+ * the roster with the team, not in the watching-from-outside section. The distinction
+ * only matters to the schedule, which is a picture of capacity: a row of empty weeks
+ * against somebody whose job is direction rather than delivery reads as spare capacity
+ * that is not there.
+ */
+export function isLeadershipOnly(person: PersonWorkload): boolean {
+  return (
+    person.roles.length === 1 && person.roles[0] === LEADERSHIP && holdsNothing(person)
+  );
+}
+
+/**
+ * Does the schedule draw a row for this person?
+ *
+ * Everybody does, including people holding nothing - that emptiness is the answer to
+ * "who is free", which is half of what the chart is for, and dropping those rows meant
+ * the one question the chart could not answer was the one people opened it to ask.
+ *
+ * The two exceptions are the roles that are never the answer to "who could take this":
+ * somebody watching from outside engineering, and somebody whose only role is
+ * leadership. Both are on the roster, and both would otherwise show as a person with
+ * a year of free time.
+ */
+export function schedulable(person: PersonWorkload): boolean {
+  return !isObserver(person) && !isLeadershipOnly(person);
+}
+
 export interface RosterSplit {
   /** The team: everybody who is staffable or is carrying something. */
   roster: PersonWorkload[];

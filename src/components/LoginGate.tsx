@@ -28,6 +28,7 @@ import '@aws-amplify/ui-react/styles.css';
 import styled from 'styled-components';
 
 import { isAuthConfigured } from '../services/auth';
+import Backdrop from './Backdrop';
 import { fontStack, palette, radius, shadow } from '../styles/theme';
 
 export interface AuthState {
@@ -42,6 +43,10 @@ interface LoginGateProps {
 }
 
 const AuthShell = styled.div`
+  /* Above the Backdrop's video and scrim. Without this the whole sign-in card renders
+     behind the veil - see components/Backdrop.tsx for the three-layer stack. */
+  position: relative;
+  z-index: 10;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -182,6 +187,20 @@ const Footnote = styled.p`
   color: ${palette.inkSoft};
 `;
 
+/*
+  The same credit the app carries in its footer, in the same small-label treatment.
+  Here it is under the card rather than under the content, because there is no content
+  to be the last thing after.
+*/
+const Credit = styled.p`
+  margin-top: 20px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: ${palette.inkSoft};
+`;
+
 /** Must be inside Authenticator.Provider for useAuthenticator to have a context. */
 function Gate({ children }: LoginGateProps) {
   const { authStatus, user, signOut } = useAuthenticator((context) => [
@@ -197,6 +216,14 @@ function Gate({ children }: LoginGateProps) {
   }
 
   return (
+    <>
+      {/*
+        The same sunset the app sits on, and that is the point: this is the first screen
+        anybody sees, and it was the one place that still looked like the tool before
+        the restyle. The card keeps its own opaque paper ground, so nothing here costs
+        the sign-in form any contrast.
+      */}
+      <Backdrop />
     <AuthShell>
       <Caption>Planning Roadmap</Caption>
       <Sub>QWealth</Sub>
@@ -219,7 +246,9 @@ function Gate({ children }: LoginGateProps) {
         Same account as the marketing compliance tool. Access to the roadmap also
         requires membership of the <strong>planning</strong> group.
       </Footnote>
+      <Credit>Styling powered by marketing</Credit>
     </AuthShell>
+    </>
   );
 }
 

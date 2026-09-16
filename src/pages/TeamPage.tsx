@@ -46,7 +46,7 @@ import { describeError, getRoadmap, getRoles, getSkills, getWorkload } from '../
 import { palette, radius } from '../styles/theme';
 import { assignmentsByPerson, noAssignments } from '../utils/assignments';
 import { buildGrid, todayISO } from '../utils/dates';
-import { splitObservers } from '../utils/observers';
+import { schedulable, splitObservers } from '../utils/observers';
 import {
   Chip,
   ErrorText,
@@ -66,13 +66,6 @@ import type {
   Unassigned,
 } from '../types';
 
-const Summary = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-`;
-
 const Toolbar = styled.div`
   display: flex;
   align-items: center;
@@ -80,10 +73,25 @@ const Toolbar = styled.div`
   flex-wrap: wrap;
 `;
 
-/* The two views sit tight against each other so they read as one control. */
+/*
+  The two views sit tight against each other so they read as one control, and on a row
+  of their own rather than in the toolbar.
+
+  They were in the toolbar beside Add and Invite, and that put two different kinds of
+  thing in one line: Roster and Schedule choose WHAT THIS PAGE IS, the buttons act
+  within whatever has been chosen. Sitting them together made the switch read as a
+  third and fourth action, and the toolbar below now belongs unambiguously to the view
+  above it.
+*/
 const ViewSwitch = styled.div`
-  display: inline-flex;
+  display: flex;
   gap: 4px;
+  align-self: flex-start;
+`;
+
+/* The two ways in, inside the add panel. Same treatment as ViewSwitch, one level down. */
+const ModeSwitch = styled(ViewSwitch)`
+  margin-bottom: 12px;
 `;
 
 const Spacer = styled.div`
@@ -321,7 +329,22 @@ export default function TeamPage() {
 
   const [editing, setEditing] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-  const [inviting, setInviting] = useState(false);
+  /*
+    Which way in, once the add panel is open.
+
+    There were two buttons here - "Add person" and "Invite somebody" - and the argument
+    for keeping them apart was true and beside the point: one grants a login, the other
+    creates a roster row. Nobody arriving at this page is thinking in those terms. They
+    are thinking "get Priya onto this", and being asked to know which of two buttons
+    implements that is the tool leaking its own storage layout.
+
+    So one button, and the choice it used to encode becomes a choice INSIDE the panel,
+    where it can be stated in a sentence rather than inferred from two labels. Invite is
+    the default because it is the ordinary case: the person signs in and fills in their
+    own entry, which is both less typing here and more accurate than an admin guessing
+    at somebody else's skills.
+  */
+  const [addMode, setAddMode] = useState<'invite' | 'manual'>('invite');
   /*
     Which of the two this page is showing.
 
@@ -525,30 +548,28 @@ export default function TeamPage() {
   const { roster: rosterPeople, observers } = useMemo(() => splitObservers(visible), [visible]);
 
   /**
-   * The chart's rows: the same people the roster is showing, minus the ones holding
-   * nothing.
+   * The chart's rows: everybody the schedule should draw, empty weeks included.
+   *
+   * The empty rows used to be dropped, on the grounds that a Gantt row with no marks
+   * carries no information. That was backwards. A row of free weeks is the answer to
+   * "who could take this", which is the question that made this page exist - and
+   * dropping those rows meant the chart could only ever show you the people who were
+   * already busy. Emptiness is the signal, not the absence of one.
    *
    * Driven off `visible` on purpose, so the two halves of the page cannot disagree
-   * about who is on the roster. The empty rows are dropped because a Gantt row with no
-   * marks on it carries no information and costs 52px; the roster below already lists
-   * them and the count of them is stated under the chart.
+   * about who is on the roster, and filtered by `schedulable` rather than by whether
+   * the person holds anything. See utils/observers.ts for the two roles that are left
+   * out and why leaving them in would read as capacity that does not exist.
    */
   const chartRows = useMemo<TeamChartRow[]>(
     () =>
-      visible
-        .map((person) => ({
-          email: person.email,
-          name: person.name,
-          active: person.active,
-          assignments:
-            assignments.get(person.email.toLowerCase()) ?? noAssignments(person.email),
-        }))
-        .filter(
-          (row) =>
-            row.assignments.owned.length > 0 ||
-            row.assignments.roles.length > 0 ||
-            row.assignments.undatedRoles.length > 0
-        ),
+      visible.filter(schedulable).map((person) => ({
+        email: person.email,
+        name: person.name,
+        active: person.active,
+        assignments:
+          assignments.get(person.email.toLowerCase()) ?? noAssignments(person.email),
+      })),
     [visible, assignments]
   );
 
@@ -564,9 +585,6 @@ export default function TeamPage() {
    */
   const onRoster = me !== null && sorted.some((p) => p.email.toLowerCase() === me);
   const canAdd = isAdmin || (me !== null && !onRoster);
-
-  const noSkillsCount = sorted.filter((p) => p.active && p.specialisations.length === 0).length;
-  const activeCount = sorted.filter((p) => p.active).length;
 
   /** Project ids rendered as names, with the unresolvable id shown rather than hidden. */
   const projectList = (ids: string[]) =>
@@ -693,11 +711,37 @@ export default function TeamPage() {
 
   return (
     <>
-      <Summary>
-        <Chip>{activeCount} on the roster</Chip>
-        {noSkillsCount ? <Chip>{noSkillsCount} with no skills recorded</Chip> : null}
-      </Summary>
+      {/* A pair rather than one toggle, so the page says what it is showing rather
+          than what it would show if pressed. Both carry aria-pressed, which is what
+          makes this readable as a choice between two rather than an on/off switch. */}
+      <ViewSwitch role="group" aria-label="What to show">
+        <ToggleButton
+          type="button"
+          $on={view === 'roster'}
+          aria-pressed={view === 'roster'}
+          onClick={() => setView('roster')}
+        >
+          Roster
+        </ToggleButton>
+        <ToggleButton
+          type="button"
+          $on={view === 'schedule'}
+          aria-pressed={view === 'schedule'}
+          onClick={() => setView('schedule')}
+        >
+          Schedule
+        </ToggleButton>
+      </ViewSwitch>
 
+      {/*
+        The toolbar belongs to the roster, so it is absent from the schedule.
+
+        Adding somebody is an edit to the list of people, and the schedule is a reading
+        of the work - offering the control there meant pressing it opened a form under a
+        chart that has nothing to do with it. The hint about who may edit whom goes with
+        it for the same reason.
+      */}
+      {view === 'roster' ? (
       <Toolbar>
         {canAdd ? (
           <PrimaryButton
@@ -708,46 +752,9 @@ export default function TeamPage() {
             }}
             disabled={skills.length === 0 || roles.length === 0}
           >
-            {adding ? 'Close' : isAdmin ? 'Add person' : 'Add myself'}
+            {adding ? 'Close' : isAdmin ? 'Add somebody' : 'Add myself'}
           </PrimaryButton>
         ) : null}
-        {/* Admin only, and separate from "Add person" on purpose: one grants a login,
-            the other creates a roster row, and merging them into a single button
-            would mean either inviting everyone you schedule work for or listing
-            everyone who can sign in as staff. */}
-        {isAdmin ? (
-          <SecondaryButton
-            type="button"
-            onClick={() => {
-              setInviting((v) => !v);
-              setAdding(false);
-              setEditing(null);
-            }}
-          >
-            {inviting ? 'Close' : 'Invite somebody'}
-          </SecondaryButton>
-        ) : null}
-        {/* A pair rather than one toggle, so the page says what it is showing rather
-            than what it would show if pressed. Both carry aria-pressed, which is what
-            makes this readable as a choice between two rather than an on/off switch. */}
-        <ViewSwitch role="group" aria-label="What to show">
-          <ToggleButton
-            type="button"
-            $on={view === 'roster'}
-            aria-pressed={view === 'roster'}
-            onClick={() => setView('roster')}
-          >
-            Roster
-          </ToggleButton>
-          <ToggleButton
-            type="button"
-            $on={view === 'schedule'}
-            aria-pressed={view === 'schedule'}
-            onClick={() => setView('schedule')}
-          >
-            Schedule
-          </ToggleButton>
-        </ViewSwitch>
         <Spacer />
         {/* Said out loud rather than left to be discovered by finding no Edit button
             on anybody else's row. An absent control explains nothing on its own.
@@ -764,6 +771,7 @@ export default function TeamPage() {
           <Hint>You can edit your own entry. Ask an admin to change anybody else.</Hint>
         ) : null}
       </Toolbar>
+      ) : null}
 
       {error ? <ErrorText role="alert">{error}</ErrorText> : null}
 
@@ -778,32 +786,61 @@ export default function TeamPage() {
       ) : null}
 
       {/*
-        Directly beneath the buttons that open them.
+        Directly beneath the button that opens it.
 
-        These used to render after the schedule, so pressing "Invite somebody" in the
-        toolbar opened a form most of a screen below it, under a full-width chart - the
-        control and the thing it revealed were nowhere near each other, and on a tall
-        chart the form appeared off-screen entirely.
+        This used to render after the schedule, so pressing the toolbar button opened a
+        form most of a screen below it, under a full-width chart - the control and the
+        thing it revealed were nowhere near each other, and on a tall chart the form
+        appeared off-screen entirely.
       */}
-      {inviting && isAdmin ? (
-        <NewPanel>
-          <PanelTitle>Give somebody a login</PanelTitle>
-          <InvitePanel />
-        </NewPanel>
-      ) : null}
-
-      {adding && canAdd ? (
+      {view === 'roster' && adding && canAdd ? (
         <NewPanel>
           <PanelTitle>{isAdmin ? 'Add somebody to the roster' : 'Add yourself to the roster'}</PanelTitle>
-          <PersonEditor
-            person={null}
-            skills={skills}
-            roles={roles}
-            admin={isAdmin}
-            lockedEmail={isAdmin ? null : me}
-            onSaved={onSaved}
-            onCancel={() => setAdding(false)}
-          />
+
+          {/* Only an admin has both paths. Somebody adding themselves is already
+              signed in, so there is nothing to invite them to and the choice would be
+              a question with one answer. */}
+          {isAdmin ? (
+            <>
+              <ModeSwitch role="group" aria-label="How to add them">
+                <ToggleButton
+                  type="button"
+                  $on={addMode === 'invite'}
+                  aria-pressed={addMode === 'invite'}
+                  onClick={() => setAddMode('invite')}
+                >
+                  Invite them
+                </ToggleButton>
+                <ToggleButton
+                  type="button"
+                  $on={addMode === 'manual'}
+                  aria-pressed={addMode === 'manual'}
+                  onClick={() => setAddMode('manual')}
+                >
+                  Fill it in myself
+                </ToggleButton>
+              </ModeSwitch>
+              <Hint>
+                {addMode === 'invite'
+                  ? 'They get a sign-in and fill in their own skills and roles the first time they use it. This is the usual way.'
+                  : 'Creates the roster entry now, with no sign-in. For somebody who needs to be schedulable before they have an account — or who will never need one.'}
+              </Hint>
+            </>
+          ) : null}
+
+          {isAdmin && addMode === 'invite' ? (
+            <InvitePanel />
+          ) : (
+            <PersonEditor
+              person={null}
+              skills={skills}
+              roles={roles}
+              admin={isAdmin}
+              lockedEmail={isAdmin ? null : me}
+              onSaved={onSaved}
+              onCancel={() => setAdding(false)}
+            />
+          )}
         </NewPanel>
       ) : null}
 
@@ -827,23 +864,16 @@ export default function TeamPage() {
                   accountable for, spanning that project&rsquo;s own dates.
                 </Hint>
                 {/* Stated rather than left to be inferred from an absence: a person
-                    missing because they hold nothing and a person missing because of a
-                    filter look identical once they are gone.
-
-                    The tail names Observers when that section exists, because otherwise
-                    "listed below" sends the reader to the roster, where they will find
-                    only some of the people this line just promised them. Everybody in
-                    the observers list holds nothing, so they are all part of this
-                    count. */}
+                    missing because of a filter and a person who is simply not on the
+                    roster look identical once they are gone. The reason given is the
+                    rule itself, because "they hold nothing" stopped being true - empty
+                    rows are drawn now, and the only people left out are the two roles
+                    that are never the answer to "who could take this". */}
                 {chartOmitted > 0 ? (
                   <Hint>
                     {chartOmitted} {chartOmitted === 1 ? 'person is' : 'people are'} not
-                    shown here: they hold nothing. They are listed below
-                    {observers.length === 0
-                      ? '.'
-                      : observers.length === chartOmitted
-                        ? ', under Observers.'
-                        : ', some of them under Observers.'}
+                    shown here: leadership, or watching from outside engineering, and
+                    holding nothing. They are on the roster.
                   </Hint>
                 ) : null}
               </ChartNotes>
