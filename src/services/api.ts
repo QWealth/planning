@@ -12,6 +12,7 @@ import axios, { AxiosError } from 'axios';
 
 import type {
   DigestPreview,
+  Features,
   Identity,
   InviteResult,
   Milestone,
@@ -121,6 +122,18 @@ export function describeError(error: unknown): string {
     return 'Could not reach the API.';
   }
   return `Request failed (${status}).`;
+}
+
+/**
+ * What this deployment will and will not send.
+ *
+ * Read by the settings page so its explanations can say whether each thing is actually
+ * running. Separate from getIdentity because it describes the deployment rather than
+ * the caller, and the two change for completely different reasons.
+ */
+export async function getFeatures(): Promise<Features> {
+  const response = await apiClient.get<Features>('/features');
+  return response.data;
 }
 
 /** Who the API thinks you are. Answers even when you are not authorised. */

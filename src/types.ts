@@ -503,6 +503,23 @@ export interface Rfc {
  * any permission level, so it can be treated as a fact about who said this rather than
  * a mutable attribute that happens to hold an address.
  */
+/**
+ * Which notification features this DEPLOYMENT has switched on.
+ *
+ * Deployment-level, not per-person: the digest's own opt-in lives on your roster row,
+ * while these say whether the deployment would deliver anything even if you asked. The
+ * settings page needs both, because explaining "you will get a DM on Monday" while the
+ * master switch is off would have somebody waiting for a message that never comes and
+ * concluding the app is broken.
+ */
+export interface Features {
+  digest_enabled: boolean;
+  progress_enabled: boolean;
+  rfc_chase_enabled: boolean;
+  /** Whether a Slack channel is configured for the RFC chase at all. */
+  rfc_channel_configured: boolean;
+}
+
 export interface RfcComment {
   comment_id: string;
   item_id: string;

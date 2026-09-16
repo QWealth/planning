@@ -35,11 +35,17 @@ import { useCallback, useEffect, useState } from 'react';
 import styled from 'styled-components';
 
 import { useIdentity } from '../components/AppShell';
-import { describeError, getDigestPreview, getPerson, patchPerson } from '../services/api';
+import {
+  describeError,
+  getDigestPreview,
+  getFeatures,
+  getPerson,
+  patchPerson,
+} from '../services/api';
 import { monoStack, palette, radius } from '../styles/theme';
-import { ErrorText, Hint, Panel, ToggleButton } from '../styles/ui';
+import { Chip, ErrorText, Hint, Panel, ToggleButton } from '../styles/ui';
 import { DIGEST_WINDOWS } from '../types';
-import type { DigestPreview, Person } from '../types';
+import type { DigestPreview, Features, Person } from '../types';
 
 const Head = styled.h2`
   font-size: 14px;
@@ -111,6 +117,19 @@ const Message = styled.pre`
   word-break: break-word;
 `;
 
+/*
+  Whether a scheduled thing is actually running on this deployment.
+
+  Worth drawing at all because three of the four things explained below have no switch
+  on this page - they are deployment-level, and two of them message people who never
+  opted in. An explanation that says "this happens on Monday" while the master switch is
+  off would leave somebody waiting for a message that is not coming and concluding the
+  app is broken.
+*/
+function Live({ on }: { on: boolean }) {
+  return <Chip title={on ? 'Running on this deployment.' : 'Switched off - nothing is sent.'}>{on ? 'On' : 'Off'}</Chip>;
+}
+
 export default function SettingsPage() {
   const identity = useIdentity();
   const email = identity?.email ?? null;
@@ -118,6 +137,7 @@ export default function SettingsPage() {
 
   const [person, setPerson] = useState<Person | null>(null);
   const [preview, setPreview] = useState<DigestPreview | null>(null);
+  const [features, setFeatures] = useState<Features | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -135,9 +155,14 @@ export default function SettingsPage() {
     }
     setError(null);
     try {
-      const [row, composed] = await Promise.all([getPerson(email), getDigestPreview()]);
+      const [row, composed, flags] = await Promise.all([
+        getPerson(email),
+        getDigestPreview(),
+        getFeatures(),
+      ]);
       setPerson(row);
       setPreview(composed);
+      setFeatures(flags);
     } catch (err) {
       setError(describeError(err));
     }
@@ -315,6 +340,73 @@ export default function SettingsPage() {
             ) : null}
           </Rows>
         )}
+      </Panel>
+
+      {/*
+        Everything below this point EXPLAINS rather than controls.
+
+        Three of these have no switch here and two of them message people who never
+        asked - so the least this page can do is say plainly what they are, when they
+        fire, and what stops them. A recurring message whose rules are undocumented is
+        one people mute rather than ask about.
+      */}
+      <Panel>
+        <Head>What else the roadmap sends</Head>
+        <Rows>
+          <Row>
+            <Controls>
+              <SubHead>Progress check</SubHead>
+              {features ? <Live on={features.progress_enabled} /> : null}
+            </Controls>
+            <Hint>
+              A Slack DM on Monday and Wednesday at 9am listing the phases you own that
+              are not finished, with a button to update them without leaving Slack. You
+              are asked about a phase if you own it, or if you are DRI of the project and
+              nobody owns it. There is no opt-out: being asked where your work has got to
+              is part of owning it. Phases already at 100%, and Maintenance bands, are
+              never included.
+            </Hint>
+          </Row>
+
+          <Row>
+            <Controls>
+              <SubHead>Review requests</SubHead>
+              {features ? <Live on={features.rfc_chase_enabled} /> : null}
+            </Controls>
+            <Hint>
+              Each weekday at 9.30am a post goes to #request_for_comments naming the
+              people who still need to read an RFC. You are named if the RFC is tagged
+              with a skill you hold at one star or more and you have not opened it.
+              Opening it is enough to stop it - you are not required to comment. It stops
+              by itself after five working days whether or not anyone has read it, and
+              only RFCs marked In review are chased.
+            </Hint>
+            {features && !features.rfc_channel_configured ? (
+              <Hint>No Slack channel is configured, so nothing would be posted.</Hint>
+            ) : null}
+          </Row>
+
+          <Row>
+            <SubHead>Unread proposals</SubHead>
+            <Hint>
+              On the RFCs page, anything you have never opened is shown in dark pink with
+              a thicker left edge. It is per person and stored on your roster entry rather
+              than in this browser, so it follows you to another machine and is not reset
+              by clearing site data. Opening an RFC marks it read; nothing else does, and
+              there is no way to mark one read without reading it.
+            </Hint>
+          </Row>
+
+          <Row>
+            <SubHead>Tagging an RFC with skills</SubHead>
+            <Hint>
+              When you write or edit an RFC you can tag the skills it needs. That is what
+              decides who gets asked to read it - by capability rather than by name, so it
+              keeps working as people move around. Wanting to learn a skill does not count:
+              only holding it at one star or more does.
+            </Hint>
+          </Row>
+        </Rows>
       </Panel>
     </>
   );

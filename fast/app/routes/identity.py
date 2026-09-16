@@ -27,11 +27,11 @@ trip that can only ever be made at the same moment as this one.
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from app import config
-from app.auth import get_user_email, get_user_groups, is_admin
+from app.auth import get_user_email, get_user_groups, is_admin, require_planning_group
 from app.db.queries import people as q
 
 logger = logging.getLogger(__name__)
@@ -103,4 +103,44 @@ async def me(request: Request) -> dict[str, Any]:
         # is shown that refusal and never reaches onboarding, so the lookup would be a
         # DynamoDB read per rejected compliance-tool login and answer nothing.
         "onboarded": _has_roster_row(email) if authorised else True,
+    }
+
+
+class Features(BaseModel):
+    """
+    Which of the notification features this deployment actually has switched on.
+
+    Served rather than assumed by the client, because the settings page explains what
+    each one does and when it fires - and an explanation that says "you will get a DM on
+    Monday" while the master switch is off is worse than no explanation. Somebody would
+    wait for a message that was never coming and conclude the roadmap was broken.
+
+    These are deployment-level switches, NOT per-person preferences. The digest's own
+    opt-in lives on the roster row; this says whether the deployment would deliver it
+    even if you asked for it.
+    """
+
+    digest_enabled: bool = False
+    progress_enabled: bool = False
+    rfc_chase_enabled: bool = False
+    # Whether a channel is configured at all. The ID itself is not served: it is of no
+    # use to a browser, and a channel id is a small piece of workspace structure that
+    # does not need to be in a public bundle to answer "is this wired up".
+    rfc_channel_configured: bool = False
+
+
+@router.get("/features", response_model=Features)
+async def features(user_email: str = Depends(require_planning_group)) -> dict[str, Any]:
+    """
+    What this deployment will and will not send.
+
+    Behind the group check like everything else. It reveals nothing sensitive, but it
+    describes internal scheduling, and there is no reason for it to be the one route
+    that answers to anybody with the URL.
+    """
+    return {
+        "digest_enabled": config.DIGEST_ENABLED,
+        "progress_enabled": config.PROGRESS_ENABLED,
+        "rfc_chase_enabled": config.RFC_CHASE_ENABLED,
+        "rfc_channel_configured": bool(config.RFC_REVIEW_CHANNEL),
     }
