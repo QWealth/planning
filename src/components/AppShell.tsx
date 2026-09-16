@@ -104,6 +104,27 @@ const Title = styled.h1`
   margin: 0;
 `;
 
+/*
+  The credit line.
+
+  Quiet on purpose: it is an acknowledgement, not a banner, so it takes the same
+  small-label treatment as every other label in the app - heavy, uppercase, .1em - at
+  the muted ink rather than at an accent. Inside Page so it sits above the background
+  video like everything else, and after the outlet so it is the last thing on every
+  page rather than a fixed bar competing with the content.
+*/
+const Footer = styled.footer`
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid ${palette.hairline};
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: ${palette.inkSoft};
+  text-align: center;
+`;
+
 const Spacer = styled.div`
   flex: 1;
 `;
@@ -309,6 +330,8 @@ export default function AppShell({ auth }: { auth: AuthState }) {
       <Suspense fallback={<PageLoading>Loading…</PageLoading>}>
         <Outlet context={identity} />
       </Suspense>
+
+      <Footer>Visual identity by the QWealth marketing team</Footer>
     </Page>
     </>
   );
