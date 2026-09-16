@@ -249,32 +249,45 @@ export default function ProjectEditor(props: ProjectEditorProps) {
       </Label>
 
       {/*
-        The category, as a text input with a datalist rather than a <select>.
+        A picker of groups that already exist, not a free-text box.
 
-        A select would need a closed list, and nobody can write that list from here -
-        see the note on `category` in types.ts. An input alone would give "Data",
-        "data" and "DATA" as three headings within a week. The datalist is the middle:
-        typing offers what is already in use, so the second project reuses the first's
-        spelling, and a genuinely new category is still one you can just type.
+        It was a text input with a datalist, which was the right answer while there was
+        no other way to make a group: nobody could write the list in advance, so the
+        list had to be authored by typing. Now that groups are made deliberately on the
+        roadmap - "New group", then choose what goes in it - the name is written exactly
+        once, and every place that reads it is choosing from what exists.
 
-        No `required`. A project nobody has filed is a real state and the roadmap has
-        a place for it - see UNGROUPED in utils/laneView.ts.
+        That closes the gap the datalist could only narrow. A datalist SUGGESTS; it does
+        not stop somebody typing past it, so "Data", "data" and "DATA" were still three
+        headings a hurried afternoon away. A select cannot produce a fourth spelling.
+
+        "No group" is a first-class option rather than an empty string somebody has to
+        clear the box to reach, for the same reason the owner dropdowns offer
+        "Unassigned": an unfiled project is a real state and the roadmap has a place for
+        it - see UNGROUPED in utils/laneView.ts.
       */}
       <Label>
-        Category
-        <Input
-          {...register('category', { maxLength: 40 })}
-          list="project-categories"
-          placeholder="e.g. App, Data, QC"
-          autoComplete="off"
-        />
-        <datalist id="project-categories">
+        Group
+        <Select {...register('category')}>
+          <option value="">No group</option>
+          {/* A value stored before this list was built - or one whose group has since
+              been emptied - is offered back rather than silently reset to "No group"
+              by a select that cannot represent it. Same guard as OwnerOptions. */}
+          {project?.category && !categories.includes(project.category) ? (
+            <option value={project.category}>{project.category}</option>
+          ) : null}
           {categories.map((category) => (
-            <option key={category} value={category} />
+            <option key={category} value={category}>
+              {category}
+            </option>
           ))}
-        </datalist>
+        </Select>
       </Label>
-      <Hint>Groups this lane with others like it on the roadmap. Leave it blank to file it later.</Hint>
+      <Hint>
+        {categories.length === 0
+          ? 'No groups yet — make one with “New group” above the chart.'
+          : 'Groups this lane with others like it on the roadmap.'}
+      </Hint>
 
       <Label>
         DRI

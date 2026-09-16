@@ -27,7 +27,7 @@ import Legend from '../components/Legend';
 import ProjectEditor from '../components/ProjectEditor';
 import { useIdentity } from '../components/AppShell';
 import Timeline, { laneAnchorId } from '../components/chart/Timeline';
-import { describeError, getRoadmap, saveLaneOrder } from '../services/api';
+import { describeError, getRoadmap, patchProject, saveLaneOrder } from '../services/api';
 import { palette } from '../styles/theme';
 import {
   ErrorText,
@@ -35,6 +35,7 @@ import {
   Panel,
   PrimaryButton,
   SecondaryButton,
+  Input,
   Select,
   ToggleButton,
 } from '../styles/ui';
@@ -45,6 +46,13 @@ import { SORT_OPTIONS, hasCategories, sortLanes, splitComplete } from '../utils/
 import type { SortMode } from '../utils/laneView';
 import { milestoneDates, sortMilestones } from '../utils/milestones';
 import { responsibleProjectIds } from '../utils/projects';
+
+/* The inline name field, so making a group never leaves the page. */
+const GroupNameForm = styled.form`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+`;
 
 const Toolbar = styled.div`
   display: flex;
@@ -339,6 +347,26 @@ export default function RoadmapPage() {
   );
 
   /**
+   * File a project under a group, from the group's own heading.
+   *
+   * Optimistic: the lane moves as soon as the request is sent, and the page is not
+   * reloaded. A grouping change is one field and its whole effect is visible on screen,
+   * so waiting on a round trip before moving the row would make a one-click action feel
+   * like a form. A failure puts the error in the banner and the next reload corrects
+   * the row - which is the same bargain every other edit on this page makes.
+   */
+  const onAddToGroup = useCallback(
+    (projectId: string, category: string) => {
+      updateLane(projectId, (project) => ({ ...project, category }));
+      // The group has somewhere real to live now, so drop it from the pending list -
+      // leaving it would draw the heading twice, once empty and once with the lane.
+      setNewGroups((current) => current.filter((name) => name !== category));
+      void patchProject(projectId, { category }).catch((err) => setError(describeError(err)));
+    },
+    [updateLane]
+  );
+
+  /**
    * A new lane, appended and opened.
    *
    * Opened rather than left collapsed because a lane created from this form has no
@@ -577,7 +605,22 @@ export default function RoadmapPage() {
   */
   const groupable = useMemo(() => hasCategories(stored), [stored]);
   const [grouping, setGrouping] = useState(true);
-  const grouped = groupable && grouping;
+
+  /*
+    Groups that exist because somebody just made one, and nothing is in them yet.
+
+    Held here rather than stored, because a group IS a value on a project - there is no
+    row for one and there does not need to be. The consequence is that an empty group
+    does not survive a reload, which is honest: a group with nothing in it is a heading
+    and an intention, not a fact about the roadmap. It lives long enough to file the
+    first project into, which is the whole job.
+  */
+  const [newGroups, setNewGroups] = useState<string[]>([]);
+  const [namingGroup, setNamingGroup] = useState(false);
+
+  // Offered as soon as a group exists at all, including one that is still empty -
+  // otherwise making the very first group would hide the toggle that shows it.
+  const grouped = (groupable || newGroups.length > 0) && grouping;
 
   /*
     Every category in use, for the editor's datalist. Sorted, because this one IS a
@@ -593,8 +636,14 @@ export default function RoadmapPage() {
         seen.add(category);
       }
     }
+    // Groups made but not yet filled count too. Without this a brand-new group is
+    // offered on its own heading and missing from the project editor's picker, so the
+    // two controls for the same fact would disagree about what exists.
+    for (const name of newGroups) {
+      seen.add(name);
+    }
     return [...seen].sort((a, b) => a.localeCompare(b));
-  }, [stored]);
+  }, [stored, newGroups]);
 
   /*
     Reorder is off while grouped, for the reason it is already off under a sort: "move
@@ -691,7 +740,7 @@ export default function RoadmapPage() {
               "Reorder".
             */}
             {/* Offered only when it would show something. See `groupable`. */}
-            {groupable ? (
+            {groupable || newGroups.length > 0 ? (
               <ToggleButton
                 type="button"
                 $on={grouping}
@@ -701,6 +750,52 @@ export default function RoadmapPage() {
                 Group by category
               </ToggleButton>
             ) : null}
+            {/*
+              Making a group and filling it are two steps, on purpose.
+
+              The alternative - type a category into each project's form - is how this
+              worked first, and it has the failure a closed list normally exists to
+              prevent: "Data", "data" and "DATA" as three headings, none of them wrong
+              when it was typed. Naming the group once and then choosing projects for it
+              means the name is written exactly once.
+            */}
+            {namingGroup ? (
+              <GroupNameForm
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const input = new FormData(e.currentTarget).get('group');
+                  const name = String(input ?? '').trim();
+                  if (name) {
+                    setNewGroups((current) =>
+                      current.includes(name) ? current : [...current, name]
+                    );
+                    setGrouping(true);
+                  }
+                  setNamingGroup(false);
+                }}
+              >
+                <Input
+                  name="group"
+                  autoFocus
+                  maxLength={40}
+                  placeholder="Group name"
+                  aria-label="New group name"
+                  // Escape closes it. Without this the only way out of a form somebody
+                  // opened by mistake is to submit it empty, which is a strange thing
+                  // to have to work out.
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      setNamingGroup(false);
+                    }
+                  }}
+                />
+                <SecondaryButton type="submit">Add</SecondaryButton>
+              </GroupNameForm>
+            ) : (
+              <SecondaryButton type="button" onClick={() => setNamingGroup(true)}>
+                New group
+              </SecondaryButton>
+            )}
             {!canReorder && projects.length >= 2 ? (
               <Hint>
                 {grouped
@@ -747,6 +842,11 @@ export default function RoadmapPage() {
             onToggle={toggle}
             onMoveProject={reordering ? onMoveProject : null}
             grouped={grouped}
+            extraGroups={newGroups}
+            onAddToGroup={onAddToGroup}
+            // Every lane, finished ones included: "put QVault v2 into Data" is a
+            // reasonable thing to want, and the complete section is still the roadmap.
+            assignable={stored}
             onPhaseSaved={onPhaseSaved}
             onPhaseDeleted={onPhaseDeleted}
             onMilestoneSaved={onMilestoneSaved}

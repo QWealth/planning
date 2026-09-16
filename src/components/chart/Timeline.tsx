@@ -8,14 +8,41 @@
  * ids other panels scroll to, and the empty state.
  */
 
+import { useState } from 'react';
 import styled from 'styled-components';
 
-import { palette } from '../../styles/theme';
+import { palette, radius } from '../../styles/theme';
 import { type Grid } from '../../utils/dates';
-import { groupLanes } from '../../utils/laneView';
+import { UNGROUPED, groupLanes, type LaneGroup } from '../../utils/laneView';
 import type { Milestone, Person, Phase, Project, ProjectPatch } from '../../types';
 import ChartCanvas from './ChartCanvas';
 import Lane from './Lane';
+
+/**
+ * The real groups, plus any that have been created but are still empty.
+ *
+ * Empties go just above "Everything else" rather than at the very end, because that
+ * group is the remainder and should stay the last thing on the page - and a new group
+ * is a place somebody is about to file things into, which is more useful next to the
+ * pile they will be filing FROM.
+ */
+function withEmpties(groups: LaneGroup[], extra?: string[]): LaneGroup[] {
+  if (!extra || extra.length === 0) {
+    return groups;
+  }
+  const have = new Set(groups.map((g) => g.category));
+  const empties = extra.filter((name) => !have.has(name)).map((category) => ({
+    category,
+    projects: [],
+  }));
+  if (empties.length === 0) {
+    return groups;
+  }
+  const last = groups[groups.length - 1];
+  return last?.category === UNGROUPED
+    ? [...groups.slice(0, -1), ...empties, last]
+    : [...groups, ...empties];
+}
 
 /** DOM id of a lane, so other panels can scroll to it. */
 export function laneAnchorId(projectId: string): string {
@@ -67,6 +94,65 @@ const GroupCount = styled.span`
   color: ${palette.inkSoft};
 `;
 
+/*
+  The control that puts a project into a group, on the group's own heading.
+
+  Deliberately here rather than only in the project editor. Filing nine lanes one at a
+  time means nine trips through a form that also holds the name, the DRI and the
+  support - a form somebody opened to do one thing and can leave having changed four.
+  From the heading the question is the one being asked: what else belongs in Data.
+
+  The editor's field still exists and still works; this is the other end of the same
+  fact, put where the grouping is actually being thought about.
+*/
+const AddToGroup = styled.button`
+  border: 1px dashed ${palette.borderStrong};
+  border-radius: ${radius.pill};
+  background: transparent;
+  color: ${palette.inkSoft};
+  font: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover {
+    color: ${palette.deepMagenta};
+    border-color: ${palette.deepMagenta};
+  }
+`;
+
+/*
+  The picker, as a plain <select> rather than a dropdown of our own.
+
+  It is a list of project names and nothing else - no avatars, no metadata, nothing a
+  native control cannot draw - and a native select is keyboard-navigable, type-ahead
+  searchable and correct on a phone for free. The invite picker next door is bespoke
+  because it shows Slack avatars and titles; this one has no such excuse.
+*/
+const GroupPicker = styled.select`
+  font: inherit;
+  font-size: 11px;
+  max-width: 260px;
+  border: 1px solid ${palette.borderStrong};
+  border-radius: ${radius.sm};
+  background: ${palette.card};
+  color: ${palette.ink};
+  padding: 1px 4px;
+`;
+
+/* An empty group somebody has just made. Absent once anything is in it. */
+const GroupEmpty = styled.span`
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: ${palette.inkSoft};
+`;
+
 const Empty = styled.p`
   margin: 0;
   padding: 28px 8px;
@@ -114,6 +200,21 @@ export interface TimelineProps {
    * lane_order knows nothing about.
    */
   grouped?: boolean;
+  /**
+   * Groups to draw even when nothing is in them yet.
+   *
+   * A group only exists as a value on a project, so one just created has nowhere to
+   * live until something is filed under it. Without this, "New group" would name a
+   * heading that vanished on the next render - which reads as the button not working.
+   */
+  extraGroups?: string[];
+  /**
+   * File a project under a group from its heading. Absent means the headings are
+   * read-only, which is what the complete section wants.
+   */
+  onAddToGroup?: (projectId: string, category: string) => void;
+  /** Everything that could be moved into a group - including finished lanes. */
+  assignable?: Project[];
 }
 
 export default function Timeline({
@@ -131,7 +232,15 @@ export default function Timeline({
   onMilestoneDeleted,
   onProjectSaved,
   grouped = false,
+  extraGroups,
+  onAddToGroup,
+  assignable,
 }: TimelineProps) {
+  /*
+    Which heading has its picker open. One at a time, keyed by category name: two open
+    selects in a column of headings is two places a stray click lands.
+  */
+  const [picking, setPicking] = useState<string | null>(null);
   /*
     One lane. Extracted so the flat list and the grouped one are the SAME row rather
     than two that look alike - the second copy is where a prop stops being passed and
@@ -179,7 +288,7 @@ export default function Timeline({
       {projects.length === 0 ? (
         <Empty>No projects match the current filters.</Empty>
       ) : grouped ? (
-        groupLanes(projects).map((group) => (
+        withEmpties(groupLanes(projects), extraGroups).map((group) => (
           <div key={group.category}>
             <GroupHead>
               {group.category}
@@ -188,6 +297,46 @@ export default function Timeline({
                   already a dense field of rectangles and another box in it reads as
                   another bar. */}
               <GroupRule aria-hidden="true" />
+              {group.projects.length === 0 ? (
+                <GroupEmpty>Nothing in here yet.</GroupEmpty>
+              ) : null}
+              {/* Never on "Everything else": that group is the absence of a group, so
+                  "add a project to it" is a way of saying "unfile this", which is what
+                  the picker's own blank option already does from the group it is in. */}
+              {onAddToGroup && group.category !== UNGROUPED ? (
+                picking === group.category ? (
+                  <GroupPicker
+                    autoFocus
+                    aria-label={`Add a project to ${group.category}`}
+                    defaultValue=""
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        onAddToGroup(e.target.value, group.category);
+                      }
+                      setPicking(null);
+                    }}
+                    onBlur={() => setPicking(null)}
+                  >
+                    <option value="">Pick a project…</option>
+                    {(assignable ?? [])
+                      .filter((p) => (p.category ?? '') !== group.category)
+                      .map((p) => (
+                        <option key={p.project_id} value={p.project_id}>
+                          {p.name}
+                          {p.category ? ` — currently ${p.category}` : ''}
+                        </option>
+                      ))}
+                  </GroupPicker>
+                ) : (
+                  <AddToGroup
+                    type="button"
+                    onClick={() => setPicking(group.category)}
+                    title={`Add a project to ${group.category}`}
+                  >
+                    + Add project
+                  </AddToGroup>
+                )
+              ) : null}
             </GroupHead>
             {group.projects.map((project, index) =>
               renderLane(project, index, group.projects.length)
