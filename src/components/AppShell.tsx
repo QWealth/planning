@@ -72,12 +72,29 @@ const Page = styled.div`
   /* Above both background layers. Without this the whole app renders behind the scrim
      and reads as though somebody left a translucent sheet over the screen. */
   z-index: 10;
-  max-width: 1500px;
+  /*
+    Narrower and further apart than a dense tool would normally warrant, so the sunset
+    is visible around and between the panels rather than only in the strip below the
+    last one.
+
+    1380 rather than something dramatic, because the roadmap's timeline is the widest
+    thing here and squeezing it to show a video would be a bad trade in a tool people
+    actually plan with. On a 1500px window this buys about 60px a side; on a 1920 it
+    buys 270. The vertical gaps do most of the work.
+  */
+  max-width: 1380px;
   margin: 0 auto;
-  padding: 20px 24px 48px;
+  /*
+    The horizontal padding scales with the window rather than sitting at one number,
+    because the two ends of the range want opposite things: at 1024 every pixel of
+    width belongs to the timeline, and at 1920 the content has already stopped at
+    1380 and the padding is only deciding how the leftover is split. clamp gives 24px
+    on a laptop and 56px on a wide monitor off one declaration.
+  */
+  padding: 32px clamp(24px, 3vw, 56px) 96px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 28px;
 `;
 
 const Masthead = styled.header`
