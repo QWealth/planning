@@ -152,6 +152,16 @@ const TOKENS = {
   pinkWashStrong: ['rgba(226, 30, 37, 0.18)', 'rgba(255, 90, 95, 0.28)'],
   /** The neutral counterpart, for a band nobody is responsible for. */
   slateWash: ['rgba(196, 188, 168, 0.20)', 'rgba(196, 188, 168, 0.14)'],
+  /*
+    The veil over the background video.
+
+    Warm white in the light theme and navy in the dark one - the sheet ships both as
+    .cl-scrim and .cl-scrim-strong. It is doing real work rather than decoration: the
+    video is a saturated sunset, and the gaps between cards are where text sits
+    directly over it.
+  */
+  scrim: ['rgba(255, 253, 248, 0.30)', 'rgba(29, 36, 81, 0.34)'],
+
   /** The warm wash behind a phase row and behind a project banner. */
   banner: ['rgba(246, 230, 184, 0.45)', 'rgba(255, 90, 95, 0.10)'],
 } as const;

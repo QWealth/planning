@@ -80,6 +80,12 @@ const Toolbar = styled.div`
   flex-wrap: wrap;
 `;
 
+/* The two views sit tight against each other so they read as one control. */
+const ViewSwitch = styled.div`
+  display: inline-flex;
+  gap: 4px;
+`;
+
 const Spacer = styled.div`
   flex: 1;
 `;
@@ -316,7 +322,15 @@ export default function TeamPage() {
   const [editing, setEditing] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [inviting, setInviting] = useState(false);
-  const [showChart, setShowChart] = useState(true);
+  /*
+    Which of the two this page is showing.
+
+    The roster and the schedule answer different questions - "who is here and what can
+    they do" versus "who is busy and when" - and showing them stacked meant the roster
+    was always below a full-width chart, so the page never opened on the thing it is
+    named after. One at a time, roster first.
+  */
+  const [view, setView] = useState<'roster' | 'schedule'>('roster');
   const [notice, setNotice] = useState<string | null>(null);
 
   const today = useMemo(() => todayISO(), []);
@@ -713,14 +727,27 @@ export default function TeamPage() {
             {inviting ? 'Close' : 'Invite somebody'}
           </SecondaryButton>
         ) : null}
-        <ToggleButton
-          type="button"
-          $on={showChart}
-          aria-pressed={showChart}
-          onClick={() => setShowChart((v) => !v)}
-        >
-          Schedule
-        </ToggleButton>
+        {/* A pair rather than one toggle, so the page says what it is showing rather
+            than what it would show if pressed. Both carry aria-pressed, which is what
+            makes this readable as a choice between two rather than an on/off switch. */}
+        <ViewSwitch role="group" aria-label="What to show">
+          <ToggleButton
+            type="button"
+            $on={view === 'roster'}
+            aria-pressed={view === 'roster'}
+            onClick={() => setView('roster')}
+          >
+            Roster
+          </ToggleButton>
+          <ToggleButton
+            type="button"
+            $on={view === 'schedule'}
+            aria-pressed={view === 'schedule'}
+            onClick={() => setView('schedule')}
+          >
+            Schedule
+          </ToggleButton>
+        </ViewSwitch>
         <Spacer />
         {/* Said out loud rather than left to be discovered by finding no Edit button
             on anybody else's row. An absent control explains nothing on its own.
@@ -750,7 +777,37 @@ export default function TeamPage() {
         </Notice>
       ) : null}
 
-      {showChart ? (
+      {/*
+        Directly beneath the buttons that open them.
+
+        These used to render after the schedule, so pressing "Invite somebody" in the
+        toolbar opened a form most of a screen below it, under a full-width chart - the
+        control and the thing it revealed were nowhere near each other, and on a tall
+        chart the form appeared off-screen entirely.
+      */}
+      {inviting && isAdmin ? (
+        <NewPanel>
+          <PanelTitle>Give somebody a login</PanelTitle>
+          <InvitePanel />
+        </NewPanel>
+      ) : null}
+
+      {adding && canAdd ? (
+        <NewPanel>
+          <PanelTitle>{isAdmin ? 'Add somebody to the roster' : 'Add yourself to the roster'}</PanelTitle>
+          <PersonEditor
+            person={null}
+            skills={skills}
+            roles={roles}
+            admin={isAdmin}
+            lockedEmail={isAdmin ? null : me}
+            onSaved={onSaved}
+            onCancel={() => setAdding(false)}
+          />
+        </NewPanel>
+      ) : null}
+
+      {view === 'schedule' ? (
         <ChartPanel>
           <PanelTitle>Who is doing what, when</PanelTitle>
           {/* An empty chart is an ANSWER - "nobody here holds anything dated" - so it
@@ -795,60 +852,42 @@ export default function TeamPage() {
         </ChartPanel>
       ) : null}
 
-      {inviting && isAdmin ? (
-        <NewPanel>
-          <PanelTitle>Give somebody a login</PanelTitle>
-          <InvitePanel />
-        </NewPanel>
-      ) : null}
-
-      {adding && canAdd ? (
-        <NewPanel>
-          <PanelTitle>{isAdmin ? 'Add somebody to the roster' : 'Add yourself to the roster'}</PanelTitle>
-          <PersonEditor
-            person={null}
-            skills={skills}
-            roles={roles}
-            admin={isAdmin}
-            lockedEmail={isAdmin ? null : me}
-            onSaved={onSaved}
-            onCancel={() => setAdding(false)}
-          />
-        </NewPanel>
-      ) : null}
-
-      <Panel>
-        {loading && !people ? (
-          <Status>Loading the team…</Status>
-        ) : visible.length === 0 ? (
-          <Status>Nobody on the roster yet.</Status>
-        ) : rosterPeople.length === 0 ? (
-          /* Everybody matched the observer rule. Said out loud, because an empty panel
-             above a full one reads as a bug rather than as an answer. */
-          <Status>Nobody on the roster holds anything yet — everyone is listed below.</Status>
-        ) : (
-          <Roster>
-            {rosterPeople.map(renderPerson)}
-          </Roster>
-        )}
-      </Panel>
-
-      {/* Observers: on the roster, but never the answer to "who could pick this up".
-          Rendered with the SAME renderPerson as the list above, so these rows stay
-          editable and expandable - this is a change of place, not of standing. The
-          section is absent rather than empty when nobody qualifies, which is the
-          everyday case and should cost nothing on the page. */}
-      {observers.length > 0 ? (
+      {view === 'roster' ? (
+        <>
         <Panel>
-          <PanelTitle>Observers</PanelTitle>
-          <Hint>
-            Outside engineering, and not holding anything right now. They are on the
-            roster and can be edited here; they are separated out so the list above
-            stays a list of people you could staff work to. Anyone from outside
-            engineering who does take on a lane moves back up on their own.
-          </Hint>
-          <ObserverRoster>{observers.map(renderPerson)}</ObserverRoster>
+          {loading && !people ? (
+            <Status>Loading the team…</Status>
+          ) : visible.length === 0 ? (
+            <Status>Nobody on the roster yet.</Status>
+          ) : rosterPeople.length === 0 ? (
+            /* Everybody matched the observer rule. Said out loud, because an empty panel
+               above a full one reads as a bug rather than as an answer. */
+            <Status>Nobody on the roster holds anything yet — everyone is listed below.</Status>
+          ) : (
+            <Roster>
+              {rosterPeople.map(renderPerson)}
+            </Roster>
+          )}
         </Panel>
+
+        {/* Observers: on the roster, but never the answer to "who could pick this up".
+            Rendered with the SAME renderPerson as the list above, so these rows stay
+            editable and expandable - this is a change of place, not of standing. The
+            section is absent rather than empty when nobody qualifies, which is the
+            everyday case and should cost nothing on the page. */}
+        {observers.length > 0 ? (
+          <Panel>
+            <PanelTitle>Observers</PanelTitle>
+            <Hint>
+              Outside engineering, and not holding anything right now. They are on the
+              roster and can be edited here; they are separated out so the list above
+              stays a list of people you could staff work to. Anyone from outside
+              engineering who does take on a lane moves back up on their own.
+            </Hint>
+            <ObserverRoster>{observers.map(renderPerson)}</ObserverRoster>
+          </Panel>
+        ) : null}
+        </>
       ) : null}
     </>
   );

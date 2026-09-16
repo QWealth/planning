@@ -20,7 +20,7 @@
  * because a second /api/me would be a second chance to disagree with the first.
  */
 
-import { Suspense, useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useOutletContext } from 'react-router-dom';
 import styled from 'styled-components';
 
@@ -31,7 +31,47 @@ import type { Identity } from '../types';
 import type { AuthState } from './LoginGate';
 import Onboarding from './Onboarding';
 
+/*
+  The sticker sheet's background: a full-bleed sunset video, a scrim over it, and the
+  app on top. Three layers, and the z-index order is the whole of it - video 0, scrim 1,
+  content 10.
+
+  Fixed rather than absolute so it does not scroll away on a long roadmap, and
+  `pointer-events: none` on both layers so neither ever eats a click. `object-fit:
+  cover` because the clip has one aspect ratio and the window has all of them.
+*/
+const BgVideo = styled.video`
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+  z-index: 0;
+`;
+
+/*
+  The veil. Doing real work rather than decoration: the clip is a saturated sunset and
+  the gaps between cards are where text sits directly over it. Warm white in the light
+  theme, navy in the dark one - see palette.scrim.
+*/
+const Scrim = styled.div`
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: ${palette.scrim};
+  pointer-events: none;
+  z-index: 1;
+`;
+
 const Page = styled.div`
+  position: relative;
+  /* Above both background layers. Without this the whole app renders behind the scrim
+     and reads as though somebody left a translucent sheet over the screen. */
+  z-index: 10;
   max-width: 1500px;
   margin: 0 auto;
   padding: 20px 24px 48px;
@@ -179,7 +219,36 @@ export default function AppShell({ auth }: { auth: AuthState }) {
     );
   }
 
+  /*
+    Asked once, at mount, and not watched afterwards.
+
+    Somebody who changes this system setting mid-session gets it on their next
+    navigation, which is a reasonable trade for not holding a matchMedia listener open
+    for the life of the app. `?.` because jsdom in the unit tests has no matchMedia.
+  */
+  const reducedMotion = useMemo(
+    () => window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false,
+    []
+  );
+
   return (
+    <>
+      {/*
+        Skipped entirely, not merely paused, when the machine asks for reduced motion.
+
+        This file already treats that setting as load-bearing rather than polite - see
+        the note in styles/ui.ts about a nine-lane reflow being a genuine vestibular
+        trigger - and a full-screen looping video is a stronger version of the same
+        thing. Checked in JS rather than hidden in CSS so the 474KB is never fetched by
+        somebody who asked not to see it; the body's gradient wash shows through
+        instead, which is what the page looked like before the video existed.
+      */}
+      {!reducedMotion ? (
+        <BgVideo autoPlay loop muted playsInline aria-hidden="true">
+          <source src="/bg.mp4" type="video/mp4" />
+        </BgVideo>
+      ) : null}
+      <Scrim aria-hidden="true" />
     <Page>
       <Masthead>
         <Title>Planning Roadmap</Title>
@@ -235,6 +304,7 @@ export default function AppShell({ auth }: { auth: AuthState }) {
         <Outlet context={identity} />
       </Suspense>
     </Page>
+    </>
   );
 }
 
