@@ -226,6 +226,42 @@ export const STATE_STYLE: Record<PhaseState, StateStyle> = {
 };
 
 /**
+ * The health dot on a collapsed lane: ahead, on track, at risk, late.
+ *
+ * Fixed hex like STATE_STYLE above and for the same reasons - a key swatch has to match
+ * the mark it explains, and two people comparing screenshots from a light and a dark
+ * machine are comparing project health.
+ *
+ * DELIBERATELY NOT THE LIFECYCLE FILLS. Those five say what KIND of work a bar is, and
+ * these six say how a project is GOING; reusing coral for "late" would mean a red bar
+ * and a red dot on the same row meaning two unrelated things, which is the exact
+ * ambiguity a key cannot rescue. So health gets its own small vocabulary: a real red
+ * for late, amber for at risk, the same green for on track and ahead separated by
+ * weight rather than hue, and a hollow grey for a lane nobody can judge.
+ *
+ * "No reading" is a RING rather than a fill, and that is the one that matters. A grey
+ * dot among coloured ones reads as a quiet state; a hollow one reads as an absent
+ * answer, which is what it is. The roadmap has several lanes with no progress recorded
+ * anywhere, and they must not look like a decision anybody made.
+ */
+export interface HealthStyle {
+  fill: string;
+  /** Drawn as an outline rather than a disc. Only "no reading" uses it. */
+  hollow?: boolean;
+  label: string;
+}
+
+export const HEALTH_STYLE = {
+  ahead: { fill: '#1F8A5B', label: 'Ahead' },
+  'on-track': { fill: '#5FBF8C', label: 'On track' },
+  'at-risk': { fill: '#E8A33D', label: 'At risk' },
+  late: { fill: '#D6372B', label: 'Late' },
+  complete: { fill: '#2FB3A0', label: 'Complete' },
+  'not-started': { fill: '#B9B2A2', label: 'Not started' },
+  unknown: { fill: '#B9B2A2', hollow: true, label: 'No reading' },
+} as const satisfies Record<string, HealthStyle>;
+
+/**
  * Heavy uppercase display - decision 4.
  *
  * The stack is the sticker sheet's own, fallbacks included, and the fallbacks are the

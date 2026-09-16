@@ -24,7 +24,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import styled from 'styled-components';
 
-import { palette, radius, STATE_STYLE } from '../../styles/theme';
+import { HEALTH_STYLE, palette, radius, STATE_STYLE } from '../../styles/theme';
 import { Chip } from '../../styles/ui';
 import { formatMedium, placeDay, type Grid } from '../../utils/dates';
 import {
@@ -35,6 +35,7 @@ import {
   placeMilestones,
   undatedMilestones,
 } from '../../utils/milestones';
+import { describeHealth, healthOf } from '../../utils/health';
 import { describeVerdict, laneVerdict, phaseState } from '../../utils/phaseState';
 import { laneSegments, peakConcurrency } from '../../utils/segments';
 import type { Milestone, Person, Phase, Project, ProjectPatch } from '../../types';
@@ -71,14 +72,24 @@ const Stack = styled.div`
   flex: 1;
 `;
 
-/** The state's colour as a dot, so the lane name carries the state too. */
-const StateDot = styled.span<{ $fill: string }>`
+/*
+  The health dot: ahead, on track, at risk, late.
+
+  It used to carry the lane's PHASE - coral for Coding, sand for Planning - which was
+  already said twice on the same row, by the bar segments and by the sub-label. Spending
+  the one high-contrast mark at the left of every row on a third copy left the question
+  a roadmap is opened to answer, "which of these is in trouble", unanswered anywhere.
+
+  Hollow for a lane nobody can judge. A grey disc among coloured ones reads as a quiet
+  state; a ring reads as an absent answer, which is what it is - see HEALTH_STYLE.
+*/
+const HealthDot = styled.span<{ $fill: string; $hollow: boolean }>`
   flex: none;
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: ${(p) => p.$fill};
-  border: 1px solid ${palette.hairline};
+  background: ${(p) => (p.$hollow ? 'transparent' : p.$fill)};
+  border: ${(p) => (p.$hollow ? `2px solid ${p.$fill}` : `1px solid ${palette.hairline}`)};
 `;
 
 const NameRow = styled.div`
@@ -195,6 +206,13 @@ export default function Lane({
 
   const verdict = laneVerdict(project.phases, today);
   const style = STATE_STYLE[verdict.state];
+  /*
+    How the project is GOING, as opposed to what kind of work is in it. Derived from
+    the same verdict so the dot and the sub-label cannot be computed from two different
+    passes over the lane - see utils/health.ts.
+  */
+  const health = healthOf(verdict, today);
+  const healthStyle = HEALTH_STYLE[health.health];
   // The verdict still decides the lane's dot, caption and one-line summary - "where
   // has this got to" is a single-answer question. The bar is segmented separately,
   // because "what is happening in September" is not.
@@ -244,6 +262,7 @@ export default function Lane({
 
   const laneTitle = [
     project.name,
+    `${healthStyle.label} — ${describeHealth(health)}`,
     describeVerdict(verdict),
     describeSpan(verdict.start, verdict.end),
     verdict.progress === null
@@ -373,11 +392,24 @@ export default function Lane({
           </Disclosure>
           <Stack>
             <NameRow>
-              <StateDot $fill={style.fill} aria-hidden />
+              {/* Not aria-hidden any more. It was decorative when it repeated the
+                  phase the sub-label already named; now it is the only place the
+                  health reading appears as a mark, so it carries a label. */}
+              <HealthDot
+                $fill={healthStyle.fill}
+                $hollow={'hollow' in healthStyle && healthStyle.hollow === true}
+                role="img"
+                aria-label={healthStyle.label}
+                title={`${healthStyle.label} — ${describeHealth(health)}`}
+              />
               <LaneName title={project.name}>{project.name}</LaneName>
             </NameRow>
-            <SubLabel title={owners}>
-              {describeVerdict(verdict)} · {owners}
+            {/* The health first, because it is the reason to look at the row, then what
+                is happening and who owns it. describeHealth says the arithmetic rather
+                than repeating the dot's label - "40% done, 80% of the way through" is
+                what somebody would have to work out before they could disagree. */}
+            <SubLabel title={`${describeHealth(health)} · ${owners}`}>
+              {healthStyle.label} · {describeVerdict(verdict)} · {owners}
             </SubLabel>
           </Stack>
           {move ? (

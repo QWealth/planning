@@ -34,7 +34,8 @@
 
 import styled from 'styled-components';
 
-import { palette, radius, STATE_STYLE, type PhaseState } from '../styles/theme';
+import { HEALTH_STYLE, palette, radius, STATE_STYLE, type PhaseState } from '../styles/theme';
+import type { Health } from '../utils/health';
 
 export const LegendWrap = styled.div`
   display: flex;
@@ -101,6 +102,54 @@ const MilestoneSwatch = styled(DiamondSwatch)<{ $border: string; $ring: boolean 
 `;
 
 /**
+ * The health dot at the left of each lane, at the size it is actually drawn.
+ *
+ * A key swatch that is not the same shape and size as the mark is a key somebody has
+ * to translate, so this is the same 9px disc and the same hollow ring rather than the
+ * pill the bar colours use.
+ */
+const HealthSwatch = styled.span<{ $fill: string; $hollow: boolean }>`
+  width: 9px;
+  height: 9px;
+  margin: 0 8px;
+  border-radius: 50%;
+  background: ${(p) => (p.$hollow ? 'transparent' : p.$fill)};
+  border: ${(p) => (p.$hollow ? `2px solid ${p.$fill}` : `1px solid ${palette.hairline}`)};
+`;
+
+/**
+ * Worst first, which is the opposite of the lifecycle key below and deliberate: that
+ * one is a ranking of progress and reads naturally most-advanced-first, this one is a
+ * list of things to act on and the thing to act on first goes first.
+ *
+ * "Complete" and "Not started" are omitted. Both are self-evident from the chart - a
+ * finished lane sits in its own section and an unstarted one has no bar to the left of
+ * today - and a key of seven items for a mark this small stops being read.
+ */
+const HEALTH_ORDER: Health[] = ['late', 'at-risk', 'on-track', 'ahead', 'unknown'];
+
+/** How a project is going, as drawn on the collapsed lane. See utils/health.ts. */
+export function HealthKey() {
+  return (
+    <LegendGroup>
+      {HEALTH_ORDER.map((health) => {
+        const style = HEALTH_STYLE[health];
+        return (
+          <LegendItem key={health}>
+            <HealthSwatch
+              $fill={style.fill}
+              $hollow={'hollow' in style && style.hollow === true}
+              aria-hidden
+            />
+            {style.label}
+          </LegendItem>
+        );
+      })}
+    </LegendGroup>
+  );
+}
+
+/**
  * Ordered most advanced first, matching the precedence in utils/phaseState.ts, so
  * the key reads as the ranking it actually is rather than as an arbitrary list.
  */
@@ -128,6 +177,13 @@ export function StateKey() {
 export default function Legend() {
   return (
     <LegendWrap>
+      {/* Health first, because it is the mark people look at first: the dot at the
+          left of every lane. The bar colours below it are what those bars are made
+          of, which is the second question. */}
+      <HealthKey />
+
+      <LegendDivider aria-hidden />
+
       <StateKey />
 
       <LegendDivider aria-hidden />

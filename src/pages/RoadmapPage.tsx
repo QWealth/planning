@@ -28,7 +28,7 @@ import ProjectEditor from '../components/ProjectEditor';
 import { useIdentity } from '../components/AppShell';
 import Timeline, { laneAnchorId } from '../components/chart/Timeline';
 import { describeError, getRoadmap, patchProject, saveLaneOrder } from '../services/api';
-import { palette } from '../styles/theme';
+import { palette, radius } from '../styles/theme';
 import {
   ErrorText,
   Hint,
@@ -37,7 +37,6 @@ import {
   SecondaryButton,
   Input,
   Select,
-  ToggleButton,
 } from '../styles/ui';
 import type { Milestone, Phase, Project, ProjectPatch, Roadmap } from '../types';
 import { buildGrid, todayISO } from '../utils/dates';
@@ -46,6 +45,63 @@ import { SORT_OPTIONS, hasCategories, sortLanes, splitComplete } from '../utils/
 import type { SortMode } from '../utils/laneView';
 import { milestoneDates, sortMilestones } from '../utils/milestones';
 import { responsibleProjectIds } from '../utils/projects';
+
+/*
+  The two things you can add, as big targets rather than a dropdown.
+
+  A select would be fewer pixels and would also hide both options behind a click, which
+  is the wrong trade when the whole reason this step exists is that the difference
+  between them is not obvious. Cards you can read without interacting are the point.
+*/
+const LegendFooter = styled.div`
+  padding: 2px 4px;
+`;
+
+const Choices = styled.div`
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+`;
+
+const Choice = styled.button`
+  flex: 1;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  padding: 12px 14px;
+  border: 2px solid ${palette.borderStrong};
+  border-radius: ${radius.md};
+  background: ${palette.card};
+  color: ${palette.ink};
+
+  &:hover {
+    border-color: ${palette.deepMagenta};
+  }
+
+  &:focus-visible {
+    outline: 2px solid ${palette.turquoise};
+    outline-offset: 2px;
+  }
+`;
+
+const ChoiceName = styled.span`
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: ${palette.deepMagenta};
+`;
+
+const ChoiceWhat = styled.span`
+  font-size: 12px;
+  line-height: 1.45;
+  color: ${palette.inkSoft};
+`;
 
 /* The inline name field, so making a group never leaves the page. */
 const GroupNameForm = styled.form`
@@ -111,7 +167,15 @@ export default function RoadmapPage() {
    * seeding is an effect below rather than a `useState(...)` argument.
    */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const [addingProject, setAddingProject] = useState(false);
+  /*
+    The add flow: closed, choosing what to add, or on one of the two forms.
+
+    One value rather than two booleans, because the states are genuinely exclusive -
+    two booleans allow "naming a group while the project form is open", which is a
+    state nothing should be able to reach and which two separate setters eventually do.
+  */
+  const [adding, setAdding] = useState<null | 'choose' | 'project' | 'group'>(null);
+  const [newGroupName, setNewGroupName] = useState('');
 
   /**
    * The lane order being arranged, as project ids - or null when not reordering.
@@ -384,7 +448,7 @@ export default function RoadmapPage() {
         current ? { ...current, projects: [...current.projects, created] } : current
       );
       setExpanded((current) => new Set(current).add(created.project_id));
-      setAddingProject(false);
+      setAdding(null);
       requestAnimationFrame(() => {
         document
           .getElementById(laneAnchorId(created.project_id))
@@ -577,10 +641,6 @@ export default function RoadmapPage() {
     [stored]
   );
 
-  // Across BOTH sections: a finished lane still opens to show its phases, so counting
-  // only the running ones would leave "Expand all" claiming everything was open while
-  // the complete section sat collapsed.
-  const allExpanded = arranged.length > 0 && expanded.size === arranged.length;
   const reordering = draftOrder !== null;
 
   /*
@@ -603,8 +663,18 @@ export default function RoadmapPage() {
     lanes did it in order to see them grouped, and making them find a toggle
     afterwards is asking them to ask for what they already asked for.
   */
+  /*
+    Whether the roadmap is drawn in groups, which is now a fact about the data rather
+    than a toggle.
+
+    There was a "Group by category" button and it was removed. A toggle is only worth
+    its place when both settings are useful, and "show me these twenty-one lanes as one
+    undifferentiated list" is not something anybody wants twice - the ungrouped view was
+    the old behaviour kept alive by habit. Grouping simply happens once anything is
+    filed, and the one thing the toggle really controlled - whether Reorder is
+    available - is now stated in words where the button used to be.
+  */
   const groupable = useMemo(() => hasCategories(stored), [stored]);
-  const [grouping, setGrouping] = useState(true);
 
   /*
     Groups that exist because somebody just made one, and nothing is in them yet.
@@ -616,11 +686,10 @@ export default function RoadmapPage() {
     first project into, which is the whole job.
   */
   const [newGroups, setNewGroups] = useState<string[]>([]);
-  const [namingGroup, setNamingGroup] = useState(false);
 
   // Offered as soon as a group exists at all, including one that is still empty -
   // otherwise making the very first group would hide the toggle that shows it.
-  const grouped = (groupable || newGroups.length > 0) && grouping;
+  const grouped = groupable || newGroups.length > 0;
 
   /*
     Every category in use, for the editor's datalist. Sorted, because this one IS a
@@ -684,25 +753,31 @@ export default function RoadmapPage() {
           </>
         ) : (
           <>
-            {/* The only primary button on the screen, and first in the toolbar. Everything
-                else here changes what is shown; this is the one that adds something. */}
+            {/*
+              One button that adds things, and then asks what.
+
+              There were two - "New project" and "New group" - which is the same leak
+              the Team page's Add/Invite pair had: the person arriving has decided to
+              put something on the roadmap and is then asked to pick which of two
+              implementations they meant. Worse here, because the honest answer is
+              often "a group, and then a project in it", which two buttons make into
+              two separate decisions taken in the right order by luck.
+
+              So: +, then a choice with the two options described. Still one click for
+              anybody who knows what they want, because the chooser IS the next thing
+              under the cursor rather than a modal to dismiss.
+            */}
             <PrimaryButton
               type="button"
-              onClick={() => setAddingProject((open) => !open)}
-              aria-expanded={addingProject}
+              onClick={() => {
+                setAdding(adding ? null : 'choose');
+                setNewGroupName('');
+              }}
+              aria-expanded={adding !== null}
+              title="Add a project or a group"
             >
-              {addingProject ? 'Close' : 'New project'}
+              {adding ? 'Close' : '+ Add'}
             </PrimaryButton>
-            <SecondaryButton
-              type="button"
-              onClick={() =>
-                setExpanded(allExpanded ? new Set() : new Set(arranged.map((p) => p.project_id)))
-              }
-              disabled={arranged.length === 0}
-            >
-              {allExpanded ? 'Collapse all' : 'Expand all'}
-            </SecondaryButton>
-
             {/* Sorting changes only what this reader sees; it writes nothing. The
                 title on each option carries the tie-break and the nulls-last rule,
                 which are the two things that otherwise look like bugs. */}
@@ -726,7 +801,7 @@ export default function RoadmapPage() {
             <SecondaryButton
               type="button"
               onClick={() => setDraftOrder(projects.map((p) => p.project_id))}
-              disabled={projects.length < 2 || addingProject || !canReorder}
+              disabled={projects.length < 2 || adding !== null || !canReorder}
             >
               Reorder
             </SecondaryButton>
@@ -739,74 +814,19 @@ export default function RoadmapPage() {
               the control announced itself as a sentence of explanation rather than as
               "Reorder".
             */}
-            {/* Offered only when it would show something. See `groupable`. */}
-            {groupable || newGroups.length > 0 ? (
-              <ToggleButton
-                type="button"
-                $on={grouping}
-                aria-pressed={grouping}
-                onClick={() => setGrouping((on) => !on)}
-              >
-                Group by category
-              </ToggleButton>
-            ) : null}
-            {/*
-              Making a group and filling it are two steps, on purpose.
-
-              The alternative - type a category into each project's form - is how this
-              worked first, and it has the failure a closed list normally exists to
-              prevent: "Data", "data" and "DATA" as three headings, none of them wrong
-              when it was typed. Naming the group once and then choosing projects for it
-              means the name is written exactly once.
-            */}
-            {namingGroup ? (
-              <GroupNameForm
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const input = new FormData(e.currentTarget).get('group');
-                  const name = String(input ?? '').trim();
-                  if (name) {
-                    setNewGroups((current) =>
-                      current.includes(name) ? current : [...current, name]
-                    );
-                    setGrouping(true);
-                  }
-                  setNamingGroup(false);
-                }}
-              >
-                <Input
-                  name="group"
-                  autoFocus
-                  maxLength={40}
-                  placeholder="Group name"
-                  aria-label="New group name"
-                  // Escape closes it. Without this the only way out of a form somebody
-                  // opened by mistake is to submit it empty, which is a strange thing
-                  // to have to work out.
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') {
-                      setNamingGroup(false);
-                    }
-                  }}
-                />
-                <SecondaryButton type="submit">Add</SecondaryButton>
-              </GroupNameForm>
-            ) : (
-              <SecondaryButton type="button" onClick={() => setNamingGroup(true)}>
-                New group
-              </SecondaryButton>
-            )}
             {!canReorder && projects.length >= 2 ? (
               <Hint>
+                {/* Grouping is no longer a toggle, so this says what to do rather
+                    than pointing at a control that is gone: emptying a group is
+                    still possible, one lane at a time, from the project editor. */}
                 {grouped
-                  ? 'Grouped by category. Turn grouping off to rearrange.'
+                  ? 'Lanes are arranged in groups. Reordering works on an ungrouped roadmap.'
                   : `Sorted by ${SORT_OPTIONS.find((o) => o.mode === sortMode)?.label}. Switch to Roadmap order to rearrange.`}
               </Hint>
             ) : null}
           </>
         )}
         <Spacer />
-        <Legend />
       </Toolbar>
 
       {error ? <ErrorText role="alert">{error}</ErrorText> : null}
@@ -814,7 +834,78 @@ export default function RoadmapPage() {
       {/* Above the chart rather than inside it. A new lane has no row to open an
           inline editor under, and putting the form where the chart's first row would
           be shifts every lane down by the height of a form. */}
-      {addingProject ? (
+      {adding === 'choose' ? (
+        <Panel aria-label="What would you like to add?">
+          <NewProjectHead>What are you adding?</NewProjectHead>
+          <Choices>
+            {/*
+              Both described rather than just named. "Project" and "Group" alone assume
+              the reader already knows this app's vocabulary, and the one person who
+              most needs this panel is the one who does not.
+            */}
+            <Choice type="button" onClick={() => setAdding('project')}>
+              <ChoiceName>A project</ChoiceName>
+              <ChoiceWhat>
+                A lane on the roadmap, with its own phases, dates and DRI.
+              </ChoiceWhat>
+            </Choice>
+            <Choice type="button" onClick={() => setAdding('group')}>
+              <ChoiceName>A group</ChoiceName>
+              <ChoiceWhat>
+                A heading that lanes are filed under — App, Data, QC. Projects go in
+                after.
+              </ChoiceWhat>
+            </Choice>
+          </Choices>
+        </Panel>
+      ) : null}
+
+      {adding === 'group' ? (
+        <Panel aria-label="New group">
+          <NewProjectHead>New group</NewProjectHead>
+          <GroupNameForm
+            onSubmit={(e) => {
+              e.preventDefault();
+              const name = newGroupName.trim();
+              if (name) {
+                setNewGroups((current) =>
+                  current.includes(name) ? current : [...current, name]
+                );
+              }
+              setAdding(null);
+              setNewGroupName('');
+            }}
+          >
+            <Input
+              autoFocus
+              maxLength={40}
+              value={newGroupName}
+              onChange={(e) => setNewGroupName(e.target.value)}
+              placeholder="e.g. App, Data, QC"
+              aria-label="New group name"
+              // Escape closes it. Without this the only way out of a form opened by
+              // mistake is to submit it empty, which is a strange thing to work out.
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setAdding(null);
+                }
+              }}
+            />
+            <PrimaryButton type="submit" disabled={!newGroupName.trim()}>
+              Add group
+            </PrimaryButton>
+            <SecondaryButton type="button" onClick={() => setAdding(null)}>
+              Cancel
+            </SecondaryButton>
+          </GroupNameForm>
+          <Hint>
+            It appears as a heading straight away. Use “+ Add project” on it to file
+            lanes in — a group with nothing in it is not saved.
+          </Hint>
+        </Panel>
+      ) : null}
+
+      {adding === 'project' ? (
         <Panel aria-label="New project">
           <NewProjectHead>New project</NewProjectHead>
           <ProjectEditor
@@ -823,7 +914,7 @@ export default function RoadmapPage() {
             categories={categories}
             nextLaneOrder={nextLaneOrder}
             onCreated={onProjectCreated}
-            onCancel={() => setAddingProject(false)}
+            onCancel={() => setAdding(null)}
           />
         </Panel>
       ) : null}
@@ -892,6 +983,22 @@ export default function RoadmapPage() {
           />
         </Panel>
       ) : null}
+
+      {/*
+        The key, at the bottom.
+
+        It was in the toolbar, wedged right of the controls, where it was the widest
+        thing on the row and pushed the buttons about on a narrow window. It is also
+        not a control: it is reference material, consulted when a mark on the chart
+        raises a question - and the chart is what you are looking at when that happens,
+        so the key belongs after it rather than above it.
+
+        Below the complete section rather than between the two, so there is one key for
+        both charts instead of one that appears to belong to the first.
+      */}
+      <LegendFooter>
+        <Legend />
+      </LegendFooter>
     </>
   );
 }
