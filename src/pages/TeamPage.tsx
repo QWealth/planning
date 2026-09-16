@@ -36,6 +36,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import styled from 'styled-components';
 
 import { useIdentity } from '../components/AppShell';
@@ -48,7 +49,6 @@ import { assignmentsByPerson, noAssignments } from '../utils/assignments';
 import { buildGrid, todayISO } from '../utils/dates';
 import { schedulable, splitObservers } from '../utils/observers';
 import {
-  Chip,
   ErrorText,
   Hint,
   Panel,
@@ -132,59 +132,93 @@ const Row = styled.li<{ $inactive: boolean }>`
 `;
 
 /*
-  A grid rather than a <table>. The cells wrap to one column on a narrow screen, and
-  a table cannot reflow - it would either scroll sideways or squeeze the skill chips
-  into a column two words wide.
+  One person, one line.
+
+  The roster used to give each person a four-column grid two or three lines tall: name,
+  email, roles, every skill chip they hold, every workload chip, and an Edit button. At
+  eighteen people that is a page and a half of scrolling to answer "who is on this
+  team", which is the one question the screen is named after.
+
+  So the line carries only what distinguishes people from each other at a glance - who
+  they are, what they do, and roughly how much they are holding - and everything else
+  moves behind a disclosure. The detail is not lost, it is one click away and it is
+  where it can be read properly rather than squeezed into a column two words wide.
+
+  The email is gone from the line entirely. It was the widest thing on it and it
+  identifies nobody a name does not already; it is still in the detail below, because
+  it is what you copy when you actually need to write to somebody.
 */
-const Head = styled.div`
-  display: grid;
-  grid-template-columns: minmax(180px, 1.1fr) minmax(220px, 1.6fr) minmax(150px, 0.9fr) auto;
-  gap: 10px 16px;
-  align-items: center;
-  padding: 12px 14px;
-
-  @media (max-width: 900px) {
-    grid-template-columns: minmax(0, 1fr);
-  }
-`;
-
-const Who = styled.div`
+const Line = styled.div`
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-`;
-
-const Name = styled.span`
-  font-size: 14px;
-  font-weight: 700;
-  color: ${palette.ink};
-`;
-
-const Email = styled.span`
-  font-size: 12px;
-  color: ${palette.inkSoft};
-  overflow-wrap: anywhere;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  min-height: 34px;
 `;
 
 /*
-  Roles sit under the name, inside the person's own cell, rather than in a fifth
-  column beside the skill chips.
+  The name and roles are the disclosure control, not a separate chevron beside them.
 
-  Placement is the argument, not the layout. A role is part of WHO SOMEBODY IS, and
-  putting it next to the skill chips would file it as another kind of capability -
-  the exact conflation the two vocabularies exist to avoid. Under the email it reads
-  as an attribute of the person, which is what it is.
-
-  Plain text, not chips, for the same reason: chips would compete with the skill chips
-  a few columns over and imply the two lists are the same kind of thing.
+  A 20px triangle is a small target and it makes the row's most obvious text inert -
+  people click names. This makes the whole left half the button, which is both the
+  larger target and the one somebody would try first.
 */
-const RoleLine = styled.span`
+const Disclose = styled.button`
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 2px 0;
+  margin: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: ${radius.sm};
+
+  &:hover span:first-child {
+    color: ${palette.deepMagenta};
+  }
+
+  &:focus-visible {
+    outline: 2px solid ${palette.turquoise};
+    outline-offset: 2px;
+  }
+`;
+
+const Caret = styled.span<{ $open: boolean }>`
+  flex-shrink: 0;
+  font-size: 9px;
+  line-height: 1;
+  color: ${palette.inkSoft};
+  transform: rotate(${(p) => (p.$open ? '90deg' : '0deg')});
+  transition: transform 0.12s ease;
+`;
+
+const Name = styled.span`
+  font-size: 13px;
+  font-weight: 700;
+  color: ${palette.ink};
+  white-space: nowrap;
+`;
+
+/*
+  Roles on the same line as the name, in the muted ink.
+
+  Plain text rather than chips, which is the rule RoleLine already established and the
+  reason survives compression: chips here would compete with the workload chips a few
+  inches to the right and imply the two are the same kind of fact.
+*/
+const Roles = styled.span`
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: ${palette.deepMagenta};
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 `;
 
 /* Not an error - everybody seeded from the workbook is in this state. It is a prompt. */
@@ -192,6 +226,21 @@ const NoRoles = styled.span`
   font-size: 11px;
   font-style: italic;
   color: ${palette.inkSoft};
+  white-space: nowrap;
+`;
+
+/*
+  The load, as one short string rather than three chips.
+
+  "DRI ×2 · 5 phases" fits where three bordered chips do not, and on a line this tight
+  the chips were doing more to fill space than to separate facts. The detail below
+  still names every one of them.
+*/
+const Load = styled.span`
+  flex-shrink: 0;
+  font-size: 11px;
+  color: ${palette.inkSoft};
+  white-space: nowrap;
 `;
 
 const Cell = styled.div`
@@ -202,21 +251,76 @@ const Cell = styled.div`
   min-width: 0;
 `;
 
-/**
- * A skill, marked by how the person holds it.
- *
- * The rating is carried by the STARS THEMSELVES, and that is why the glyphs are inside
- * the chip rather than encoded as three variants of its fill: "★★☆" is legible in
- * greyscale, at a glance, and without having learnt a key. The fill still ramps with
- * the rating, but only as a second and redundant channel.
- *
- * A zero-star chip is somebody who wants to learn this and cannot do it yet. It gets a
- * dashed edge, because it is not the bottom rung of the capability ramp - it is off
- * that scale entirely. It appears in the list all the same, and that is deliberate:
- * these chips are how you find who could take something, and a learner who is never
- * surfaced is never offered the work. The hollow stars are what stop that being
- * misread as capability.
- */
+/*
+  What the disclosure reveals: skills, and the work itself by name.
+
+  Named rather than counted, throughout. "DRI ×2" on the line above says how much;
+  this says which, and which is the half somebody actually needs before they can ask
+  anybody for anything.
+*/
+const Detail = styled.div`
+  border-top: 1px solid ${palette.hairline};
+  background: ${palette.blush};
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+`;
+
+const DetailRow = styled.div`
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+`;
+
+const DetailLabel = styled.span`
+  flex-shrink: 0;
+  min-width: 66px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: ${palette.inkSoft};
+`;
+
+const DetailText = styled.span`
+  font-size: 12px;
+  line-height: 1.5;
+  color: ${palette.ink};
+  overflow-wrap: anywhere;
+`;
+
+/*
+  A phase or a project, linked to where it lives.
+
+  The roster is where somebody notices that one person holds four lanes; the roadmap is
+  where they do something about it. Making them go and find it by name is how that stops
+  happening - the same argument the milestone log's project link makes.
+*/
+/*
+  The qualifier after a linked name - "DRI", or the lane a phase belongs to.
+
+  Inside the link rather than beside it, so the whole "Tax DRI" reads and clicks as one
+  thing. Dimmed rather than given its own colour, because it is the same sentence at a
+  lower volume and a second colour here would imply a second kind of fact.
+*/
+const Faint = styled.span`
+  font-weight: 600;
+  opacity: 0.6;
+`;
+
+const DetailLink = styled(Link)`
+  font-size: 12px;
+  font-weight: 600;
+  color: ${palette.deepMagenta};
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
+`;
+
 const SkillChip = styled.span<{ $stars: number; $learning: boolean }>`
   display: inline-flex;
   align-items: baseline;
@@ -260,11 +364,6 @@ const ChipStars = styled.span`
 function skillTitle(stars: number, wantsToLearn: boolean): string {
   return wantsToLearn ? `${starLabel(stars)} — and wants this work` : starLabel(stars);
 }
-
-const Nothing = styled.span`
-  font-size: 12px;
-  color: ${palette.inkSoft};
-`;
 
 const EditorPanel = styled.div`
   border-top: 1px solid ${palette.border};
@@ -328,6 +427,15 @@ export default function TeamPage() {
   const [loading, setLoading] = useState(true);
 
   const [editing, setEditing] = useState<string | null>(null);
+  /*
+    Which row is showing its detail, which is a SEPARATE thing from which row is being
+    edited. Reading somebody's skills and changing them are different intentions, and
+    collapsing them into one disclosure means every look at what Ha can do opens a form
+    with a Save button on it - which is how somebody changes a colleague's record by
+    accident. One at a time, like `editing`: two open panels in a list this dense is
+    the bulk the compression was for.
+  */
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   /*
     Which way in, once the add panel is open.
@@ -591,98 +699,210 @@ export default function TeamPage() {
     ids.map((id) => projectNames.get(id) ?? id).sort((a, b) => a.localeCompare(b));
 
   /**
+   * Everything one person holds, by name rather than by count.
+   *
+   * Built from the projects the page already has rather than from PersonWorkload's
+   * three numbers, because the numbers cannot say WHICH - and which is the half
+   * somebody needs before they can go and ask anybody for anything. The counts on the
+   * line above and these lists come from two different places, which is a real risk of
+   * disagreement; they are computed from the same roadmap fetch, so the only way they
+   * diverge is a stale response, and both would be stale together.
+   */
+  const holdings = useCallback(
+    (email: string) => {
+      const mine = email.toLowerCase();
+      const dri: Project[] = [];
+      const support: Project[] = [];
+      const phases: { id: string; name: string; project: Project }[] = [];
+
+      for (const project of projects) {
+        if ((project.dri_email ?? '').toLowerCase() === mine) {
+          dri.push(project);
+        }
+        if ((project.support_email ?? '').toLowerCase() === mine) {
+          support.push(project);
+        }
+        for (const phase of project.phases) {
+          if ((phase.owner_email ?? '').toLowerCase() === mine) {
+            phases.push({ id: phase.phase_id, name: phase.name, project });
+          }
+        }
+      }
+
+      return { dri, support, phases };
+    },
+    [projects]
+  );
+
+  /**
    * One roster row. Extracted so the roster and the observers list below are the
    * SAME row rather than two that look alike - an observer is an ordinary person
    * who happens to hold nothing, and their row must stay editable, deletable and
    * expandable exactly like everybody else's. Two copies of this JSX would drift.
    */
   const renderPerson = (person: PersonWorkload) => {
-    const dri = projectList(person.dri_project_ids);
-    const support = projectList(person.support_project_ids);
     const open = editing === person.email;
+    const showing = expanded === person.email;
     const mine = isMe(person);
     const canEdit = isAdmin || mine;
+    const held = showing ? holdings(person.email) : null;
+
+    /*
+      The load, as one string. Empty for somebody holding nothing, which draws as
+      nothing at all - there was a "Carrying nothing" marker here once and it was
+      removed for the same reason: the absence already says it, more quietly.
+    */
+    const load = [
+      person.dri_project_ids.length ? `DRI ×${person.dri_project_ids.length}` : null,
+      person.support_project_ids.length
+        ? `Support ×${person.support_project_ids.length}`
+        : null,
+      person.owned_phase_count
+        ? `${person.owned_phase_count} ${person.owned_phase_count === 1 ? 'phase' : 'phases'}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+
+    const held_ = [...person.specialisations].sort(compareSpecialisations);
+
     return (
       <Row key={person.email} $inactive={!person.active}>
-        <Head>
-          <Who>
+        <Line>
+          <Disclose
+            type="button"
+            aria-expanded={showing}
+            onClick={() => setExpanded(showing ? null : person.email)}
+          >
+            {/* A triangle rather than a chevron glyph, because ▸ rotates to ▾ with
+                one transform and needs no second character that might not be in the
+                font. aria-hidden: the button's aria-expanded already says the state. */}
+            <Caret $open={showing} aria-hidden="true">
+              ▶
+            </Caret>
             <Name>
               {person.name}
               {person.active ? '' : ' (deactivated)'}
             </Name>
-            <Email>{person.email}</Email>
             {person.roles.length > 0 ? (
-              <RoleLine>
+              <Roles>
                 {/* Falls back to the raw value, so a role dropped from the
                     vocabulary still shows rather than blanking the line. */}
                 {person.roles.map((r) => roleLabels.get(r) ?? r).join(' · ')}
-              </RoleLine>
+              </Roles>
             ) : (
-              <NoRoles>{mine ? 'No role set — add yours' : 'No role set'}</NoRoles>
+              <NoRoles>{mine ? 'no role set — add yours' : 'no role set'}</NoRoles>
             )}
-          </Who>
+          </Disclose>
 
-          <Cell>
-            {person.specialisations.length === 0 ? (
-              <Nothing>No specialisations recorded</Nothing>
-            ) : (
-              [...person.specialisations]
-                // Strongest first: the reason to scan this column is to find
-                // who to ask, not to read an alphabetical list. Zero-star
-                // learners fall to the bottom - they are in the list on
-                // purpose, but they answer a different question than the top
-                // of it. The comparator lives in utils/skills.ts because the
-                // ordering is a claim about the scale, not about this table.
-                .sort(compareSpecialisations)
-                .map((s) => (
-                  <SkillChip
-                    key={s.skill}
-                    $stars={s.stars}
-                    $learning={s.wants_to_learn}
-                    title={skillTitle(s.stars, s.wants_to_learn)}
-                  >
-                    <ChipStars aria-hidden="true">{starGlyphs(s.stars)}</ChipStars>
-                    {labels.get(s.skill) ?? s.skill}
-                  </SkillChip>
-                ))
-            )}
-          </Cell>
+          {/* Stated on the line rather than hidden in the detail: "how many skills"
+              is what tells you whether opening this row is worth it, and a roster of
+              people with nothing recorded is the thing the page exists to fix. */}
+          <Load>
+            {held_.length
+              ? `${held_.length} ${held_.length === 1 ? 'skill' : 'skills'}`
+              : 'no skills'}
+          </Load>
+          {load ? <Load>{load}</Load> : null}
 
-          {/* Somebody holding nothing gets an empty cell. There was a
-              "Carrying nothing" marker here and it was removed; the absence
-              of chips now says the same thing more quietly. */}
-          <Cell>
-            {dri.length ? (
-              <Chip title={`DRI: ${dri.join(', ')}`}>DRI ×{dri.length}</Chip>
-            ) : null}
-            {support.length ? (
-              <Chip title={`Support: ${support.join(', ')}`}>
-                Support ×{support.length}
-              </Chip>
-            ) : null}
-            {person.owned_phase_count ? (
-              <Chip title="Includes ongoing Maintenance bands">
-                {person.owned_phase_count}{' '}
-                {person.owned_phase_count === 1 ? 'phase' : 'phases'}
-              </Chip>
-            ) : null}
-          </Cell>
+          {canEdit ? (
+            <SecondaryButton
+              type="button"
+              onClick={() => {
+                setEditing(open ? null : person.email);
+                setExpanded(null);
+              }}
+              aria-expanded={open}
+            >
+              {open ? 'Close' : mine && !isAdmin ? 'Edit yours' : 'Edit'}
+            </SecondaryButton>
+          ) : null}
+        </Line>
 
-          <Cell>
-            {canEdit ? (
-              <SecondaryButton
-                type="button"
-                onClick={() => {
-                  setEditing(open ? null : person.email);
-                  setAdding(false);
-                }}
-                aria-expanded={open}
-              >
-                {open ? 'Close' : mine && !isAdmin ? 'Edit yours' : 'Edit'}
-              </SecondaryButton>
+        {showing && held ? (
+          <Detail>
+            <DetailRow>
+              <DetailLabel>Skills</DetailLabel>
+              <Cell>
+                {held_.length === 0 ? (
+                  <DetailText>
+                    Nothing recorded.{' '}
+                    {mine ? 'Add yours with Edit.' : 'Ask them to fill theirs in.'}
+                  </DetailText>
+                ) : (
+                  held_.map((s) => (
+                    <SkillChip
+                      key={s.skill}
+                      $stars={s.stars}
+                      $learning={s.wants_to_learn}
+                      title={skillTitle(s.stars, s.wants_to_learn)}
+                    >
+                      <ChipStars aria-hidden="true">{starGlyphs(s.stars)}</ChipStars>
+                      {labels.get(s.skill) ?? s.skill}
+                    </SkillChip>
+                  ))
+                )}
+              </Cell>
+            </DetailRow>
+
+            {held.dri.length > 0 || held.support.length > 0 ? (
+              <DetailRow>
+                <DetailLabel>Projects</DetailLabel>
+                <Cell>
+                  {held.dri.map((project) => (
+                    <DetailLink
+                      key={`dri-${project.project_id}`}
+                      to={`/?project=${encodeURIComponent(project.project_id)}`}
+                    >
+                      {project.name} <Faint>DRI</Faint>
+                    </DetailLink>
+                  ))}
+                  {held.support.map((project) => (
+                    <DetailLink
+                      key={`sup-${project.project_id}`}
+                      to={`/?project=${encodeURIComponent(project.project_id)}`}
+                    >
+                      {project.name} <Faint>support</Faint>
+                    </DetailLink>
+                  ))}
+                </Cell>
+              </DetailRow>
             ) : null}
-          </Cell>
-        </Head>
+
+            {held.phases.length > 0 ? (
+              <DetailRow>
+                <DetailLabel>Phases</DetailLabel>
+                <Cell>
+                  {held.phases.map((phase) => (
+                    <DetailLink
+                      key={phase.id}
+                      to={`/?project=${encodeURIComponent(phase.project.project_id)}`}
+                    >
+                      {phase.name} <Faint>{phase.project.name}</Faint>
+                    </DetailLink>
+                  ))}
+                </Cell>
+              </DetailRow>
+            ) : null}
+
+            {held.dri.length === 0 &&
+            held.support.length === 0 &&
+            held.phases.length === 0 ? (
+              <DetailRow>
+                <DetailLabel>Projects</DetailLabel>
+                <DetailText>Holding nothing on the roadmap right now.</DetailText>
+              </DetailRow>
+            ) : null}
+
+            {/* Last, and quiet. Off the line because it is the widest thing on it and
+                identifies nobody the name does not; here because it is what you copy
+                when you actually do need to write to somebody. */}
+            <DetailRow>
+              <DetailLabel>Email</DetailLabel>
+              <DetailText>{person.email}</DetailText>
+            </DetailRow>
+          </Detail>
+        ) : null}
 
         {open && canEdit ? (
           <EditorPanel>
@@ -691,8 +911,8 @@ export default function TeamPage() {
               skills={skills}
               roles={roles}
               assignments={{
-                dri,
-                support,
+                dri: projectList(person.dri_project_ids),
+                support: projectList(person.support_project_ids),
                 phaseCount: person.owned_phase_count,
               }}
               admin={isAdmin}
