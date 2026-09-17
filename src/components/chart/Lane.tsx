@@ -38,7 +38,7 @@ import {
 import { describeHealth, healthOf } from '../../utils/health';
 import { describeVerdict, laneVerdict, phaseState } from '../../utils/phaseState';
 import { laneSegments, peakConcurrency } from '../../utils/segments';
-import type { Milestone, Person, Phase, Project, ProjectPatch } from '../../types';
+import type { Milestone, Person, Phase, Project, ProjectPatch, Task } from '../../types';
 import MilestoneEditor from '../MilestoneEditor';
 import PhaseEditor from '../PhaseEditor';
 import ProjectEditor from '../ProjectEditor';
@@ -140,6 +140,64 @@ const BoardLink = styled(Link)`
   }
 `;
 
+/*
+  A task under the phase it belongs to. Only inside an expanded lane.
+
+  Deliberately the quietest row on the chart - no bar, no dates, no controls. A phase
+  is a span of work with an owner and a percentage; a task is a line on somebody's
+  list, and drawing it with the same weight would make an expanded Foundation lane look
+  like 193 phases. It is a link and a status word, and everything else about it lives
+  on the board.
+*/
+const TaskLine = styled(Link)`
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0 2px 46px;
+  font-size: 11.5px;
+  color: ${palette.ink};
+  text-decoration: none;
+  min-width: 0;
+
+  &:hover > span:first-child {
+    color: ${palette.deepMagenta};
+    text-decoration: underline;
+  }
+`;
+
+const TaskTitle = styled.span`
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+`;
+
+const TaskStatusText = styled.span`
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: ${palette.inkSoft};
+`;
+
+/* "+ 188 more on the board". The cap is what stops an expanded lane being a board. */
+const TaskMore = styled(Link)`
+  display: inline-block;
+  padding: 2px 0 6px 46px;
+  font-size: 11px;
+  font-weight: 600;
+  color: ${palette.inkSoft};
+  text-decoration: none;
+
+  &:hover {
+    color: ${palette.deepMagenta};
+    text-decoration: underline;
+  }
+`;
+
+/** How many tasks a phase lists before deferring to the board. See renderTasks. */
+const TASKS_SHOWN = 5;
+
 const SupportChip = styled(Chip)`
   position: absolute;
   top: 50%;
@@ -161,6 +219,14 @@ export interface LaneProps {
   project: Project;
   grid: Grid;
   people: Person[];
+  /**
+   * This project's tasks, or undefined until they have been fetched.
+   *
+   * Only ever rendered inside an expanded lane - see the task rows below. Undefined
+   * and empty are different: undefined means nobody has asked the board yet and the
+   * lane says nothing, while empty means it asked and there are none.
+   */
+  tasks?: Task[];
   /** Categories already in use, for the inline editor's datalist. */
   categories?: string[];
   today: string;
@@ -188,6 +254,7 @@ export default function Lane({
   project,
   grid,
   people,
+  tasks,
   categories,
   today,
   expanded,
@@ -306,6 +373,67 @@ export default function Lane({
    * state and four callbacks, so a component would take eight props to render what
    * the row above it renders inline.
    */
+  /*
+    This lane's tasks, split the same way its milestones are: the ones that name a
+    phase go under that phase, the rest under the project.
+
+    Closed work is dropped. A lane expanded to see what is outstanding does not want
+    Foundation's finished tasks, and the board is where the history lives - which is
+    also why the "+ more" link points there rather than lifting the cap.
+  */
+  const openTasks = (tasks ?? []).filter(
+    (task) => task.status !== 'done' && task.status !== 'dropped'
+  );
+  const tasksByPhase = new Map<string, Task[]>();
+  const looseTasks: Task[] = [];
+  for (const task of openTasks) {
+    const phaseId = task.phase_id ?? null;
+    if (phaseId) {
+      const existing = tasksByPhase.get(phaseId);
+      if (existing) {
+        existing.push(task);
+      } else {
+        tasksByPhase.set(phaseId, [task]);
+      }
+    } else {
+      looseTasks.push(task);
+    }
+  }
+
+  /*
+    One phase's - or the lane's - tasks, capped.
+
+    FIVE, and the cap is the whole reason this is readable. Foundation carries 193
+    tasks; listing them would turn one expanded lane into a page, and the person who
+    expanded it was looking at a Gantt chart. Five is enough to see what KIND of work
+    is filed here, and the link says how much more there is and where to read it.
+  */
+  const renderTasks = (list: Task[], key: string) => {
+    if (list.length === 0) {
+      return null;
+    }
+    const shown = list.slice(0, TASKS_SHOWN);
+    return (
+      <div key={`tasks-${key}`}>
+        {shown.map((task) => (
+          <TaskLine
+            key={task.item_id}
+            to={`/tasks/${encodeURIComponent(task.item_id)}`}
+            title={task.title}
+          >
+            <TaskTitle>{task.title}</TaskTitle>
+            <TaskStatusText>{task.status.replace('-', ' ')}</TaskStatusText>
+          </TaskLine>
+        ))}
+        {list.length > shown.length ? (
+          <TaskMore to={`/tasks?project=${encodeURIComponent(project.project_id)}`}>
+            + {list.length - shown.length} more on the board
+          </TaskMore>
+        ) : null}
+      </div>
+    );
+  };
+
   const renderMilestone = (milestone: Milestone, nested: boolean) => {
     const status = milestoneStatus(milestone, today);
     const title = `${project.name} — ${describeMilestone(milestone, today)}`;
@@ -576,6 +704,11 @@ export default function Lane({
                     from it, and inside this phase's <div> so a phase that gets
                     reordered takes its milestones with it. */}
                 {placement.byPhase.get(phase.phase_id)?.map((m) => renderMilestone(m, true))}
+
+                {/* And this phase's open tasks, below its milestones. Deadlines
+                    before to-dos: a date the phase answers to outranks a line on
+                    somebody's list, and both are indented under the same phase. */}
+                {renderTasks(tasksByPhase.get(phase.phase_id) ?? [], phase.phase_id)}
               </div>
             );
           })
@@ -604,6 +737,13 @@ export default function Lane({
           of the split - a deadline that belongs to a stage of the work should be read
           next to that stage, not in a separate list further down the screen. */}
       {expanded ? placement.onLane.map((milestone) => renderMilestone(milestone, false)) : null}
+
+      {/* Tasks that name no phase, against the lane itself. These are the majority and
+          always will be - every one of the 287 that came across the migration is in
+          this state - so they are listed rather than hidden, exactly as unattached
+          milestones are one block up. Filing one under a phase is an edit on the task,
+          not something this chart asks anybody to do. */}
+      {expanded ? renderTasks(looseTasks, 'lane') : null}
 
       {expanded && adding === 'milestone' ? (
         <EditorRow>

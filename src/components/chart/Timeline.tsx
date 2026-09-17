@@ -8,13 +8,13 @@
  * ids other panels scroll to, and the empty state.
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import styled from 'styled-components';
 
 import { palette, radius } from '../../styles/theme';
 import { type Grid } from '../../utils/dates';
 import { UNGROUPED, groupLanes, type LaneGroup } from '../../utils/laneView';
-import type { Milestone, Person, Phase, Project, ProjectPatch } from '../../types';
+import type { Milestone, Person, Phase, Project, ProjectPatch, Task } from '../../types';
 import ChartCanvas from './ChartCanvas';
 import Lane from './Lane';
 
@@ -163,6 +163,14 @@ const Empty = styled.p`
 export interface TimelineProps {
   projects: Project[];
   people: Person[];
+  /**
+   * Every task, or undefined until the board has been asked.
+   *
+   * Passed whole and split per lane here rather than by the caller, so the grouping
+   * happens once per render instead of once per lane - and so a lane cannot be handed
+   * somebody else's tasks by a caller that filtered wrongly.
+   */
+  tasks?: Task[];
   /** Categories already in use, forwarded to each lane's inline editor. */
   categories?: string[];
   grid: Grid;
@@ -220,6 +228,7 @@ export interface TimelineProps {
 export default function Timeline({
   projects,
   people,
+  tasks,
   categories,
   grid,
   today,
@@ -241,6 +250,26 @@ export default function Timeline({
     selects in a column of headings is two places a stray click lands.
   */
   const [picking, setPicking] = useState<string | null>(null);
+
+  /*
+    Tasks grouped by project once, rather than a filter per lane inside the map - which
+    on this board would be twenty-one passes over 287 rows on every render.
+  */
+  const tasksByProject = useMemo(() => {
+    const out = new Map<string, Task[]>();
+    for (const task of tasks ?? []) {
+      if (!task.project_id) {
+        continue;
+      }
+      const existing = out.get(task.project_id);
+      if (existing) {
+        existing.push(task);
+      } else {
+        out.set(task.project_id, [task]);
+      }
+    }
+    return out;
+  }, [tasks]);
   /*
     One lane. Extracted so the flat list and the grouped one are the SAME row rather
     than two that look alike - the second copy is where a prop stops being passed and
@@ -261,6 +290,7 @@ export default function Timeline({
         project={project}
         grid={grid}
         people={people}
+        tasks={tasks ? (tasksByProject.get(project.project_id) ?? []) : undefined}
         categories={categories}
         today={today}
         expanded={expanded.has(project.project_id)}

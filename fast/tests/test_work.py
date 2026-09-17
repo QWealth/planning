@@ -496,3 +496,137 @@ def test_promoted_subtasks_get_their_own_audit_row(client):
 
     assert promotion["before"]["parent_id"] == ticket["item_id"]
     assert promotion["after"]["parent_id"] is None
+
+
+# --- filing a task under a phase --------------------------------------------
+#
+# The same arrangement milestones already have, so the tests that matter are the ones
+# proving the reference cannot go stale: a phase from another project, a phase with no
+# project, and a phase that gets deleted out from under the task.
+
+
+def _project_with_phase(name: str = "DocuTelligence"):
+    """A project and one phase of it. Returns (project_id, phase_id)."""
+    from app.db.queries import projects as pq
+
+    project = pq.create_project(name=name)
+    phase = pq.create_phase(project["project_id"], {"name": "Coding", "phase_order": 0})
+    return project["project_id"], phase["phase_id"]
+
+
+def test_a_task_can_be_filed_under_a_phase(aws) -> None:
+    from app.db.queries import work as q
+
+    project_id, phase_id = _project_with_phase()
+    task = q.create_task(
+        {"title": "Wire up the queue", "status": "backlog", "project_id": project_id,
+         "phase_id": phase_id}
+    )
+    assert task["phase_id"] == phase_id
+    assert q.get_task(task["item_id"])["phase_id"] == phase_id
+
+
+def test_a_task_with_no_phase_is_a_real_state(aws) -> None:
+    # 287 tasks came across with no phase and nobody is going to hand-file them, so
+    # unfiled has to stay first-class rather than be treated as missing data.
+    from app.db.queries import work as q
+
+    project_id, _ = _project_with_phase()
+    assert q.create_task(
+        {"title": "x", "status": "backlog", "project_id": project_id}
+    )["phase_id"] is None
+
+
+def test_a_phase_from_another_project_is_refused(aws) -> None:
+    """
+    DynamoDB has no foreign keys, so this would be stored happily and then group the
+    task under a heading its own lane never draws - present in the API, invisible on
+    the chart. Exactly what projects._check_phase_ref exists to prevent for milestones.
+    """
+    from app.db.queries import _updates, work as q
+
+    mine, _ = _project_with_phase("Mine")
+    _, theirs_phase = _project_with_phase("Theirs")
+
+    with pytest.raises(_updates.ValidationError):
+        q.create_task(
+            {"title": "x", "status": "backlog", "project_id": mine, "phase_id": theirs_phase}
+        )
+
+
+def test_a_phase_without_a_project_is_refused(aws) -> None:
+    # Not quietly cleared: "belongs to Coding, but to no project" is a half-finished
+    # form, and a silent null makes it a task nobody can find under the phase they
+    # thought they filed it against.
+    from app.db.queries import _updates, work as q
+
+    _, phase_id = _project_with_phase()
+    with pytest.raises(_updates.ValidationError):
+        q.create_task({"title": "x", "status": "backlog", "phase_id": phase_id})
+
+
+def test_moving_a_task_and_its_phase_together_is_allowed(aws) -> None:
+    """
+    The case that decides where the check runs. Validating the new phase against the
+    OLD project would refuse this, which is a legitimate edit.
+    """
+    from app.db.queries import work as q
+
+    first, first_phase = _project_with_phase("First")
+    second, second_phase = _project_with_phase("Second")
+    task = q.create_task(
+        {"title": "x", "status": "backlog", "project_id": first, "phase_id": first_phase}
+    )
+
+    moved = q.update_task(task["item_id"], {"project_id": second, "phase_id": second_phase})
+    assert moved["project_id"] == second
+    assert moved["phase_id"] == second_phase
+
+
+def test_moving_only_the_project_refuses_a_now_stale_phase(aws) -> None:
+    # Refused rather than silently cleared. "I moved it and it lost its phase" is the
+    # kind of thing nobody notices until the task is missing from the lane.
+    from app.db.queries import _updates, work as q
+
+    first, first_phase = _project_with_phase("First")
+    second, _ = _project_with_phase("Second")
+    task = q.create_task(
+        {"title": "x", "status": "backlog", "project_id": first, "phase_id": first_phase}
+    )
+
+    with pytest.raises(_updates.ValidationError):
+        q.update_task(task["item_id"], {"project_id": second})
+
+
+def test_a_task_can_be_unfiled(aws) -> None:
+    from app.db.queries import work as q
+
+    project_id, phase_id = _project_with_phase()
+    task = q.create_task(
+        {"title": "x", "status": "backlog", "project_id": project_id, "phase_id": phase_id}
+    )
+    assert q.update_task(task["item_id"], {"phase_id": None})["phase_id"] is None
+
+
+def test_deleting_a_phase_promotes_its_tasks(client, aws) -> None:
+    """
+    Deleting a phase must not delete the work filed under it. The id would otherwise
+    survive as a reference to a phase that is gone, and the task would group under a
+    heading nothing draws - stored, returned, and invisible.
+    """
+    from app.db.queries import work as q
+
+    project_id, phase_id = _project_with_phase()
+    kept = q.create_task(
+        {"title": "still real", "status": "backlog", "project_id": project_id,
+         "phase_id": phase_id}
+    )
+    elsewhere = q.create_task(
+        {"title": "untouched", "status": "backlog", "project_id": project_id}
+    )
+
+    assert client.delete(f"/api/projects/{project_id}/phases/{phase_id}").status_code == 204
+
+    assert q.get_task(kept["item_id"])["phase_id"] is None
+    assert q.get_task(kept["item_id"])["title"] == "still real"
+    assert q.get_task(elsewhere["item_id"]) is not None

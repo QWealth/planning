@@ -27,7 +27,7 @@ import Legend from '../components/Legend';
 import ProjectEditor from '../components/ProjectEditor';
 import { useIdentity } from '../components/AppShell';
 import Timeline, { laneAnchorId } from '../components/chart/Timeline';
-import { describeError, getRoadmap, patchProject, saveLaneOrder } from '../services/api';
+import { describeError, getRoadmap, getTasks, patchProject, saveLaneOrder } from '../services/api';
 import { palette, radius } from '../styles/theme';
 import {
   ErrorText,
@@ -38,7 +38,7 @@ import {
   Input,
   Select,
 } from '../styles/ui';
-import type { Milestone, Phase, Project, ProjectPatch, Roadmap } from '../types';
+import type { Milestone, Phase, Project, ProjectPatch, Roadmap, Task } from '../types';
 import { buildGrid, todayISO } from '../utils/dates';
 import { laneOrderChanges, moveLane } from '../utils/laneOrder';
 import { SORT_OPTIONS, hasCategories, sortLanes, splitComplete } from '../utils/laneView';
@@ -458,15 +458,51 @@ export default function RoadmapPage() {
     []
   );
 
-  const toggle = useCallback((projectId: string) => {
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (!next.delete(projectId)) {
-        next.add(projectId);
-      }
-      return next;
-    });
-  }, []);
+  /*
+    The board's tasks, fetched the first time anybody opens a lane.
+
+    Lazily, because the collapsed roadmap shows none of them and 287 rows is a request
+    the ordinary visit does not need - somebody checking where DocuTelligence has got
+    to never expands anything. Once, because the second lane to open wants the same
+    list, and `null` vs `[]` is what tells the two apart.
+
+    Failures are swallowed on purpose. Tasks are a detail inside an expanded lane, and
+    turning a roadmap into an error banner because the board did not answer would be
+    the tail wagging the dog; the lane simply lists nothing, as it did before.
+  */
+  const [tasks, setTasks] = useState<Task[] | null>(null);
+  const loadingTasks = useRef(false);
+
+  const ensureTasks = useCallback(() => {
+    if (tasks !== null || loadingTasks.current) {
+      return;
+    }
+    loadingTasks.current = true;
+    void getTasks()
+      .then(setTasks)
+      .catch(() => {
+        // Left null, so a later expand tries again rather than the page remembering
+        // one bad moment for the rest of the session.
+        loadingTasks.current = false;
+      });
+  }, [tasks]);
+
+  const toggle = useCallback(
+    (projectId: string) => {
+      // Asked for on every toggle rather than only on the first open. It is a no-op
+      // once they are in hand, and gating it on "is this an open rather than a close"
+      // would be a second piece of state to keep honest for nothing.
+      ensureTasks();
+      setExpanded((current) => {
+        const next = new Set(current);
+        if (!next.delete(projectId)) {
+          next.add(projectId);
+        }
+        return next;
+      });
+    },
+    [ensureTasks]
+  );
 
   const stored = useMemo(() => {
     const list = roadmap?.projects ?? [];
@@ -931,6 +967,7 @@ export default function RoadmapPage() {
             today={today}
             expanded={expanded}
             onToggle={toggle}
+            tasks={tasks ?? undefined}
             onMoveProject={reordering ? onMoveProject : null}
             grouped={grouped}
             extraGroups={newGroups}
@@ -969,6 +1006,7 @@ export default function RoadmapPage() {
           <Timeline
             projects={complete}
             people={roadmap?.people ?? []}
+            tasks={tasks ?? undefined}
             categories={categories}
             grid={grid}
             today={today}

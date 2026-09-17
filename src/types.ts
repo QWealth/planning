@@ -603,6 +603,18 @@ export interface Task {
   body: string;
   status: string;
   project_id: string | null;
+  /**
+   * Which phase of that project this task belongs to, or null for the project as a
+   * whole. The expanded lane lists tasks under the phase bar they name.
+   *
+   * Null is the common case and always will be — every task that came across the
+   * migration has no phase, and nobody is going to file 287 of them by hand. The lane
+   * lists unfiled tasks under the project instead of hiding them.
+   *
+   * Optional as well as nullable, because a backend deployed before the field existed
+   * omits it entirely.
+   */
+  phase_id?: string | null;
   /** Null for a ticket. The owning ticket's id for a subtask. */
   parent_id: string | null;
   owner_email: string | null;
@@ -747,6 +759,8 @@ export interface TaskPatch {
   body?: string;
   status?: string;
   project_id?: string | null;
+  /** Must name a phase of `project_id`; the API refuses anything else. */
+  phase_id?: string | null;
   parent_id?: string | null;
   owner_email?: string | null;
   due?: string | null;
@@ -839,6 +853,8 @@ export interface TaskCreate {
   body?: string;
   status?: string;
   project_id?: string | null;
+  /** Must name a phase of `project_id`; the API refuses anything else. */
+  phase_id?: string | null;
   parent_id?: string | null;
   owner_email?: string | null;
   due?: string | null;

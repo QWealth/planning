@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.auth import require_planning_group
 from app.db.models import AuditLogModel
-from app.db.queries import audit, projects as q
+from app.db.queries import audit, projects as q, work as work_q
 from app.schemas.projects import (
     AuditOut,
     MilestoneCreate,
@@ -240,7 +240,7 @@ async def delete_phase(
     """
     Remove a phase. The audit row keeps the full before-snapshot.
 
-    Any milestones filed under it are detached, not deleted - see
+    Any milestones OR TASKS filed under it are detached, not deleted - see
     q.detach_phase_milestones for why - and each one gets its own audit row. They are
     real edits to real rows, and folding them into the phase's delete entry would
     make "why is this milestone no longer under Infra" answerable only by someone who
@@ -259,6 +259,12 @@ async def delete_phase(
         if milestone.get("phase_id") == phase_id
     ]
 
+    # Tasks live in the other table, so they are detached explicitly rather than by
+    # the same call that handles milestones. Done BEFORE the phase goes, so a failure
+    # leaves the phase in place and the whole delete retryable - the other way round
+    # would leave tasks pointing at a phase that no longer exists.
+    detached_tasks = work_q.detach_phase_tasks(project_id, phase_id)
+
     q.delete_phase(project_id, phase_id)
     audit.record(
         action="delete",
@@ -274,6 +280,15 @@ async def delete_phase(
             entity_id=milestone["milestone_id"],
             before=milestone,
             after={**milestone, "phase_id": None},
+            user_email=user_email,
+        )
+    for task_id in detached_tasks:
+        audit.record(
+            action="update",
+            entity=AuditLogModel.ENTITY_TASK,
+            entity_id=task_id,
+            before={"phase_id": phase_id},
+            after={"phase_id": None},
             user_email=user_email,
         )
 

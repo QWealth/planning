@@ -33,7 +33,7 @@
  * two would leave decisions buried in a backlog row that nobody reads twice.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import styled from 'styled-components';
 
@@ -56,6 +56,7 @@ interface FormValues {
   title: string;
   /** '' means "not tied to a project", and is stored as null. */
   project_id: string;
+  phase_id: string;
   /** '' means "a ticket in its own right", and is stored as null. */
   parent_id: string;
   status: string;
@@ -127,6 +128,20 @@ export function buildTaskPatch(
   }
   if (dirty.project_id) {
     patch.project_id = values.project_id || null;
+    /*
+      A project change always carries the phase with it, whether or not the phase field
+      was touched.
+
+      The API refuses a phase_id belonging to a different project, so a patch that moved
+      only the project would be rejected outright - correctly, but the person did not do
+      anything wrong. Sending the phase alongside makes the two fields move together,
+      which is what choosing a different project in this form actually means. The select
+      below resets to blank on that change, so unless they then picked one, this is null.
+    */
+    patch.phase_id = values.phase_id || null;
+  }
+  if (dirty.phase_id && !dirty.project_id) {
+    patch.phase_id = values.phase_id || null;
   }
   if (dirty.parent_id) {
     // The empty option is a PROMOTION, not a blank. Sent as '' the backend would look
@@ -176,11 +191,14 @@ export default function TaskEditor({
   const {
     register,
     handleSubmit,
+    watch,
+    setValue,
     formState: { dirtyFields, isSubmitting, isDirty, errors },
   } = useForm<FormValues>({
     defaultValues: {
       title: task?.title ?? '',
       project_id: task?.project_id ?? defaultProjectId ?? '',
+      phase_id: task?.phase_id ?? '',
       parent_id: task?.parent_id ?? defaultParentId ?? '',
       // A new task starts in the backlog rather than at the first served status, so
       // this does not change meaning if the vocabulary is ever reordered.
@@ -213,6 +231,31 @@ export default function TaskEditor({
     'Not tied to a project'
   );
 
+  /*
+    The project the form is CURRENTLY holding, not the one the task was loaded with,
+    so the phase list follows the project select as it changes rather than a render
+    behind it.
+  */
+  const chosenProjectId = watch('project_id');
+  const chosenProject = projects.find((p) => p.project_id === chosenProjectId) ?? null;
+  const phaseChoices = chosenProject
+    ? [...chosenProject.phases].sort((a, b) => a.phase_order - b.phase_order)
+    : [];
+
+  /*
+    Picking a different project clears the phase. The old phase belongs to the old
+    project and the API would refuse it, so leaving it selected would make the form
+    hold a value that cannot be saved and say nothing about why.
+  */
+  useEffect(() => {
+    if (chosenProjectId !== (task?.project_id ?? defaultProjectId ?? '')) {
+      setValue('phase_id', '', { shouldDirty: true });
+    }
+    // Only when the project moves. Including setValue would re-run this on every
+    // render of a form whose project has not changed, wiping a phase mid-edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chosenProjectId]);
+
   const onSubmit = handleSubmit(async (values) => {
     setError(null);
     try {
@@ -223,6 +266,7 @@ export default function TaskEditor({
             body: values.body,
             status: values.status,
             project_id: values.project_id || null,
+            phase_id: values.phase_id || null,
             parent_id: values.parent_id || null,
             owner_email: values.owner_email.trim() || null,
             due: values.due || null,
@@ -312,6 +356,40 @@ export default function TaskEditor({
             ))}
           </Select>
         </Label>
+
+        {/*
+          The phase, and only once a project has been chosen.
+
+          A phase belongs to a project, so offering this first would be a dropdown whose
+          contents depend on a field below it - and the API refuses the pair where one is
+          set and the other is not. Absent rather than disabled when there is no project:
+          a disabled control implies something you could enable here, and the thing to do
+          is pick a project, which is the field immediately above.
+
+          "The whole project" is a real first answer rather than a placeholder. Most
+          tasks are not about one phase, and every one of the 287 that came across the
+          migration is in exactly that state.
+        */}
+        {chosenProject ? (
+          <Label>
+            Phase
+            <Select {...register('phase_id')}>
+              <option value="">The whole project</option>
+              {/* A phase that has since been deleted is offered back rather than
+                  silently dropped by a select that cannot represent it - the same
+                  guard projectOptions makes one field up. */}
+              {task?.phase_id && !phaseChoices.some((p) => p.phase_id === task.phase_id) ? (
+                <option value={task.phase_id}>Unknown phase ({task.phase_id})</option>
+              ) : null}
+              {phaseChoices.map((phase) => (
+                <option key={phase.phase_id} value={phase.phase_id}>
+                  {phase.name}
+                </option>
+              ))}
+            </Select>
+            <Hint>Shows this task under that phase when the lane is expanded.</Hint>
+          </Label>
+        ) : null}
 
         <Label>
           Owner

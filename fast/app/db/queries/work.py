@@ -93,6 +93,7 @@ TASK_UPDATABLE = {
     "body",
     "status",
     "project_id",
+    "phase_id",
     "parent_id",
     "owner_email",
     "due",
@@ -300,9 +301,37 @@ def create_rfc(rfc: dict[str, Any]) -> dict[str, Any]:
     return RfcModel.from_item(item)
 
 
+def _check_phase(project_id: Optional[str], phase_id: Optional[str]) -> None:
+    """
+    Refuse a phase_id that does not name a phase of the task's own project.
+
+    The same check projects._check_phase_ref makes for milestones, and it is here for
+    the same reason: DynamoDB has no foreign keys, so a phase id belonging to another
+    project would be stored happily and then group the task under a heading this lane
+    never draws. The row would exist, be returned by the API, and appear nowhere.
+
+    A phase with no project is refused outright rather than quietly cleared. "This task
+    belongs to Coding, but to no project" is not a state anybody meant to create - it is
+    a half-finished form or a caller that forgot a field, and a silent null would turn
+    the mistake into a task that nobody can find under the phase they filed it against.
+    """
+    if not phase_id:
+        return
+    if not project_id:
+        raise ValidationError("a task cannot have a phase_id without a project_id")
+    # Imported here rather than at module scope: queries/projects.py imports nothing
+    # from this module today, and a top-level import would be the first half of a cycle
+    # for a check used on two code paths.
+    from app.db.queries import projects as projects_q
+
+    if projects_q.get_phase(project_id, phase_id) is None:
+        raise ValidationError(f"phase_id {phase_id!r} is not a phase of this project")
+
+
 def create_task(task: dict[str, Any]) -> dict[str, Any]:
     """Write a new task. Refuses a parent that is itself a subtask."""
     _check_parent(None, task.get("parent_id"))
+    _check_phase(task.get("project_id"), task.get("phase_id"))
 
     item_id = _new_id("tsk")
     item = TaskModel.create_item(
@@ -311,6 +340,7 @@ def create_task(task: dict[str, Any]) -> dict[str, Any]:
         body=task.get("body") or "",
         status=task["status"],
         project_id=task.get("project_id"),
+        phase_id=task.get("phase_id"),
         parent_id=task.get("parent_id"),
         owner_email=task.get("owner_email"),
         due=_iso(task.get("due")),
@@ -399,6 +429,22 @@ def update_task(item_id: str, changes: dict[str, Any]) -> Optional[dict[str, Any
 
     if "parent_id" in changes:
         _check_parent(item_id, changes["parent_id"])
+
+    # Checked against the project the task will HAVE, not the one it has now.
+    #
+    # Both fields can move in one PATCH, and the two orderings disagree: validating a
+    # new phase against the old project refuses a legitimate "move this task, lane and
+    # phase together" edit, while validating an old phase against a new project lets a
+    # stale reference through. Merging first and checking the result is the only reading
+    # that is right in both directions.
+    #
+    # Moving a task to a different project while keeping a phase_id belonging to the old
+    # one is refused rather than silently cleared. "I moved it and it lost its phase" is
+    # the kind of thing nobody notices until the task is missing from the lane.
+    if "phase_id" in changes or "project_id" in changes:
+        current = get_task(item_id) or {}
+        merged = {**current, **changes}
+        _check_phase(merged.get("project_id"), merged.get("phase_id"))
 
     try:
         item = apply_update(
@@ -660,3 +706,40 @@ def list_milestone_checks() -> list[dict[str, Any]]:
     through a UI nobody has asked for yet.
     """
     return [MilestoneCheckModel.from_item(i) for i in _list_kind(Kind.MILESTONE_CHECK.value)]
+
+
+def detach_phase_tasks(project_id: str, phase_id: str) -> list[str]:
+    """
+    Un-file every task that names this phase, and say which ones.
+
+    The same rule projects.detach_phase_milestones follows, and the same reasoning:
+    deleting a phase PROMOTES its tasks, it does not take them with it. "We restructured
+    the phases" is not a decision to drop somebody's work, and a task is a smaller thing
+    than a milestone only in ambition - it is still a row somebody wrote down on purpose.
+
+    Doing nothing is the option that looks cheapest and is worst. The id would survive
+    as a reference to a phase that is gone, and the task would group under a heading
+    nothing draws - stored, returned by the API, and invisible in the expanded lane.
+    Setting it to null puts it back under the project, which the lane already renders.
+
+    Returns the ids it changed, so the route can audit them one by one.
+    """
+    touched: list[str] = []
+    for task in list_tasks(project_id=project_id):
+        if task.get("phase_id") != phase_id:
+            continue
+        # Straight through apply_update rather than update_task, which would re-run
+        # _check_phase against a phase that is in the middle of being deleted.
+        try:
+            apply_update(
+                get_work_table(),
+                _key(task["item_id"]),
+                {"phase_id": None},
+                TASK_UPDATABLE,
+                "item_id",
+            )
+        except ValidationError:
+            # The task was deleted underneath us. Nothing to un-file.
+            continue
+        touched.append(task["item_id"])
+    return touched

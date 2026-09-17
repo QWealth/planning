@@ -841,6 +841,7 @@ class TaskModel:
         body: str = "",
         status: str = TaskStatus.BACKLOG.value,
         project_id: Optional[str] = None,
+        phase_id: Optional[str] = None,
         parent_id: Optional[str] = None,
         owner_email: Optional[str] = None,
         due: Optional[str] = None,
@@ -857,6 +858,20 @@ class TaskModel:
             "body": body or "",
             "status": status,
             "project_id": project_id,
+            # Which PHASE of that project, or None for the lane as a whole. Exactly
+            # the arrangement MilestoneModel already has, and deliberately the same
+            # one: "Coding" is where most of a project's tasks actually live, and a
+            # task filed only against the project can be drawn nowhere more specific
+            # than the whole lane.
+            #
+            # Nullable and expected to be null far more often than not. 287 tasks came
+            # across with no phase at all and nobody is going to hand-file them, so an
+            # unfiled task has to stay a first-class state rather than a gap - see the
+            # expanded lane, which lists them under the project instead.
+            #
+            # Meaningless without project_id, and queries/work.py refuses the pair
+            # where one is set and the other is not.
+            "phase_id": phase_id,
             "parent_id": parent_id,
             "owner_email": owner_email,
             "due": due,
@@ -876,6 +891,7 @@ class TaskModel:
             "body": item.get("body") or "",
             "status": item.get("status") or TaskStatus.BACKLOG.value,
             "project_id": item.get("project_id") or None,
+            "phase_id": item.get("phase_id") or None,
             "parent_id": item.get("parent_id") or None,
             "owner_email": item.get("owner_email") or None,
             "due": item.get("due") or None,

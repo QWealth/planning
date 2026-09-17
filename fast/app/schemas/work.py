@@ -196,6 +196,11 @@ class TaskBase(BaseModel):
     body: str = Field(default="", max_length=MAX_BODY)
     status: TaskStatus = TaskStatus.BACKLOG
     project_id: Optional[str] = None
+    # Which phase of that project, so the expanded lane can list the task under the
+    # bar it belongs to. Meaningless without project_id, and db/queries/work.py refuses
+    # the pair where one is set and the other is not - the check needs to read the
+    # project's phases and this object cannot.
+    phase_id: Optional[str] = None
     parent_id: Optional[str] = None
     owner_email: Optional[str] = None
     due: Optional[ISODate] = None
@@ -216,6 +221,7 @@ class TaskUpdate(BaseModel):
     body: Optional[str] = Field(default=None, max_length=MAX_BODY)
     status: Optional[TaskStatus] = None
     project_id: Optional[str] = None
+    phase_id: Optional[str] = None
     parent_id: Optional[str] = None
     owner_email: Optional[str] = None
     due: Optional[ISODate] = None
@@ -242,6 +248,7 @@ class TaskOut(BaseModel):
     body: str = ""
     status: str
     project_id: Optional[str] = None
+    phase_id: Optional[str] = None
     parent_id: Optional[str] = None
     owner_email: Optional[str] = None
     due: Optional[ISODate] = None
