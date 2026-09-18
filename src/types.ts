@@ -880,3 +880,29 @@ export interface ProjectCreate {
   phases?: PhaseCreate[];
   milestones?: MilestoneCreate[];
 }
+
+/**
+ * A file attached to a task.
+ *
+ * No storage key and no URL. The key is an internal address; the URL is a capability
+ * that works for anybody holding it until it expires, so it is minted per click by
+ * `getAttachmentDownload` rather than shipped in a list and cached in every browser
+ * that ever drew the page.
+ */
+export interface Attachment {
+  attachment_id: string;
+  filename: string;
+  content_type: string;
+  /** Bytes, as the uploader's browser reported them. Display only. */
+  size: number;
+  uploaded_by: string | null;
+  created_at: string | null;
+}
+
+/** What the API hands back to upload one file with: where to POST, and what to send. */
+export interface AttachmentStarted {
+  attachment: Attachment;
+  upload_url: string;
+  /** Signature, policy and the rest. Opaque — posted back to S3 verbatim. */
+  fields: Record<string, string>;
+}

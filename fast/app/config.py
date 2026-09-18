@@ -201,6 +201,26 @@ MILESTONE_CHECK_ENABLED = os.environ.get("MILESTONE_CHECK_ENABLED", "false").str
     "yes",
 }
 
+# Where task attachments live. Empty in a local run and in the demo, where the
+# attachment routes refuse rather than guessing at a bucket - an upload signed for a
+# bucket that is not ours would either fail confusingly or, far worse, succeed.
+ATTACHMENTS_BUCKET = os.environ.get("ATTACHMENTS_BUCKET", "").strip()
+
+# How long a presigned URL is good for.
+#
+# Fifteen minutes for an upload, because the browser starts it immediately and a long
+# window is a link somebody can forward. Five for a download, which is longer than a
+# click and shorter than a Slack message stays interesting - the URL grants access to
+# that one object to anybody holding it, so it is deliberately not something worth
+# passing around instead of the page.
+UPLOAD_URL_TTL = 900
+DOWNLOAD_URL_TTL = 300
+
+# The largest file the API will sign for. Enforced in the presigned POST conditions as
+# well as here, so a caller that lies about the size gets refused by S3 rather than by
+# our good manners.
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
 # Logging. See the Lambda note in main.py - basicConfig alone does nothing there.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 

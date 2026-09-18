@@ -10,6 +10,7 @@ from mangum import Mangum
 
 from app import config
 from app.routes import (
+    attachments,
     digest,
     identity,
     milestone_log,
@@ -72,6 +73,10 @@ app.include_router(milestone_log.router)
 # kinds do not share a prefix even though they share every access pattern.
 app.include_router(work.router)
 app.include_router(work.tasks_router)
+
+# Files on a task. Its own router because it is the only part of this API that signs
+# anything - see routes/attachments.py, which is worth reading before adding to it.
+app.include_router(attachments.router)
 
 # The Slack directory the invite picker is built from. Read-only and admin-only, and
 # it creates no roster rows - see routes/slack.py for why that separation matters.

@@ -77,6 +77,11 @@ WORK_SK = "#ITEM"
 # the change.
 COMMENT_SK_PREFIX = "COMMENT#"
 
+# The other child row on a work item. "A" (0x41) sorts after "#" (0x23) and before "C",
+# so the item itself is still items[0] and an item's attachments come back before its
+# comments - which is the order they are drawn in, and one less sort on the client.
+ATTACHMENT_SK_PREFIX = "ATTACHMENT#"
+
 
 class Role(str, Enum):
     """Who owns a project, in which capacity."""
@@ -803,6 +808,84 @@ class CommentModel:
             "body": item.get("body") or "",
             "created_at": item.get("created_at"),
             "updated_at": item.get("updated_at"),
+        }
+
+
+class AttachmentModel:
+    """
+    A file somebody put on a work item: the METADATA row, not the file.
+
+    The bytes live in S3 under `storage_key` and nothing but a presigned URL ever
+    reaches them - see routes/attachments.py. This row is the only thing that knows the
+    object exists, which is why it carries the original filename as well as the key:
+    the key is a uuid so that two people uploading `notes.pdf` do not collide, and a
+    download named after a uuid is a download nobody can find again.
+
+    `uploaded` IS THE POINT OF THIS ROW BEING WRITTEN FIRST
+    -------------------------------------------------------
+    The row is created when the upload URL is signed, before the browser has sent a
+    byte, and flipped to uploaded=True when the browser says it finished. Two states,
+    because the alternatives are both worse: writing the row after the upload means a
+    file in the bucket that nothing references if the browser closes mid-request, and
+    writing nothing until then means no way to tell that orphan from a real object.
+
+    So a row with uploaded=False is a started-and-abandoned upload. The list route hides
+    them, which is what makes an abandoned upload invisible rather than a broken link.
+
+    SIZE AND CONTENT TYPE ARE WHAT THE CALLER CLAIMED, not what arrived. S3 enforces the
+    size in the presigned conditions and the browser sets the type; neither is re-read
+    here, because reading the object back to check would mean downloading every
+    attachment through the API - which is the exact cost presigning exists to avoid.
+    They are display metadata, and the one that matters for safety is neither: every
+    download is served as an attachment, never inline. See the download route.
+    """
+
+    @staticmethod
+    def sort_key(created_at: str, attachment_id: str) -> str:
+        """The child row's key. Time first, for the reason CommentModel gives."""
+        return f"{ATTACHMENT_SK_PREFIX}{created_at}#{attachment_id}"
+
+    @staticmethod
+    def create_item(
+        item_id: str,
+        attachment_id: str,
+        filename: str,
+        content_type: str,
+        size: int,
+        storage_key: str,
+        uploaded_by: str,
+    ) -> dict[str, Any]:
+        """Build an attachment row, not yet uploaded."""
+        now = _now()
+        return {
+            "item_id": item_id,
+            "sk": AttachmentModel.sort_key(now, attachment_id),
+            "attachment_id": attachment_id,
+            "filename": filename,
+            "content_type": content_type,
+            "size": size,
+            "storage_key": storage_key,
+            "uploaded_by": uploaded_by,
+            "uploaded": False,
+            "created_at": now,
+        }
+
+    @staticmethod
+    def from_item(item: dict[str, Any]) -> dict[str, Any]:
+        """Convert a DynamoDB attachment row to a schema-compatible dict."""
+        return {
+            "attachment_id": item.get("attachment_id"),
+            "item_id": item.get("item_id"),
+            "filename": item.get("filename") or "file",
+            "content_type": item.get("content_type") or "application/octet-stream",
+            "size": from_decimal(item.get("size", 0)),
+            # Deliberately NOT returned to the browser - see the schema in
+            # routes/attachments.py. Kept here because the delete and download paths
+            # both need it and both go through from_item.
+            "storage_key": item.get("storage_key"),
+            "uploaded_by": item.get("uploaded_by"),
+            "uploaded": bool(item.get("uploaded", False)),
+            "created_at": item.get("created_at"),
         }
 
 

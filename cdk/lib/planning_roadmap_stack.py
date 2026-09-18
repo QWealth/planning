@@ -122,7 +122,14 @@ class PlanningRoadmapStack(cdk.Stack):
                 "See lib/cognito_stack.py."
             )
 
-        dynamodb_stack = DynamoDBStack(self, "DynamoDBStack", env=child_env)
+        dynamodb_stack = DynamoDBStack(
+            self,
+            "DynamoDBStack",
+            # Split here rather than in the stack, so the bucket's allowed origins and
+            # the API's are provably the same string.
+            cors_origins=[o.strip() for o in cors_origins.split(",") if o.strip()],
+            env=child_env,
+        )
 
         cognito_stack = CognitoStack(
             self,
@@ -138,6 +145,7 @@ class PlanningRoadmapStack(cdk.Stack):
             projects_table=dynamodb_stack.projects_table,
             people_table=dynamodb_stack.people_table,
             work_table=dynamodb_stack.work_table,
+            attachments_bucket=dynamodb_stack.attachments_bucket,
             audit_table=dynamodb_stack.audit_table,
             user_pool=cognito_stack.user_pool,
             env_name=env_name,

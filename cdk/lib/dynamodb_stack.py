@@ -1,4 +1,4 @@
-"""The three tables the roadmap API reads and writes.
+"""The four tables the roadmap API reads and writes, and the bucket it puts files in.
 
 Key schemas here must match app/db/models.py and app/config.py exactly. They are
 repeated in demo.py's create_tables() as well, which is the one duplication worth
@@ -7,13 +7,24 @@ having: the demo has to build the same tables in moto without importing CDK.
 
 import aws_cdk as cdk
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
 
 class DynamoDBStack(cdk.Stack):
-    """Projects+phases, people, and the audit log."""
+    """Projects+phases, people, the work table, the audit log, and task attachments."""
 
-    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        # Where the browser uploads from. The API's CORS list, reused rather than
+        # restated: a bucket that allows an origin the API refuses is a bucket with a
+        # rule nothing can use, and the reverse is an upload that fails in the browser
+        # with a message about preflight that says nothing about the cause.
+        cors_origins: list,
+        **kwargs,
+    ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
         # Projects and their phases, single-table.
@@ -149,6 +160,52 @@ class DynamoDBStack(cdk.Stack):
             projection_type=dynamodb.ProjectionType.ALL,
         )
 
+        # Task attachments. Files rather than rows, so a bucket rather than a table -
+        # but it lives in the DATA stack with the tables for the reason they are here:
+        # it holds things people uploaded and would be sorry to lose, and stacks that
+        # hold those are the ones that keep RETAIN.
+        #
+        # PRIVATE, WITH NO EXCEPTIONS. Everything reaches it through a presigned URL
+        # minted by the API for a caller it has already authenticated; nothing is
+        # readable by a URL somebody guesses or forwards after it expires. That is the
+        # whole security model for this feature, so it is stated where the bucket is
+        # made rather than inferred from four defaults.
+        self.attachments_bucket = s3.Bucket(
+            self,
+            "AttachmentsBucket",
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            enforce_ssl=True,
+            # Versioned, because the delete route removes the metadata row and the
+            # object, and "somebody deleted the wrong attachment" is recoverable from a
+            # version and not from anything else. The metadata row is gone either way -
+            # this buys the file back, not the reference to it.
+            versioned=True,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+            cors=[
+                s3.CorsRule(
+                    # The browser PUTs the file straight to S3 rather than through the
+                    # API, so S3 itself has to allow the request. Uploading through
+                    # Lambda would cap every attachment at the 6MB payload limit and
+                    # spend Lambda time being a pipe.
+                    allowed_methods=[s3.HttpMethods.PUT],
+                    allowed_origins=cors_origins,
+                    allowed_headers=["*"],
+                    max_age=3000,
+                )
+            ],
+            lifecycle_rules=[
+                s3.LifecycleRule(
+                    # An upload that was presigned and never completed leaves nothing,
+                    # but a multipart one leaves parts that are billed and invisible.
+                    abort_incomplete_multipart_upload_after=cdk.Duration.days(7),
+                    # Old versions are the undo above, not an archive. A year is long
+                    # enough that anybody who noticed would have noticed.
+                    noncurrent_version_expiration=cdk.Duration.days(365),
+                )
+            ],
+        )
+
         for name, table in (
             ("ProjectsTableName", self.projects_table),
             ("PeopleTableName", self.people_table),
@@ -156,3 +213,7 @@ class DynamoDBStack(cdk.Stack):
             ("AuditTableName", self.audit_table),
         ):
             cdk.CfnOutput(self, name, value=table.table_name)
+
+        cdk.CfnOutput(
+            self, "AttachmentsBucketName", value=self.attachments_bucket.bucket_name
+        )

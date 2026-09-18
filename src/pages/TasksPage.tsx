@@ -62,6 +62,7 @@ import {
   getRoadmap,
   getTaskStatuses,
   getTasks,
+  patchTask,
 } from '../services/api';
 import { palette, radius } from '../styles/theme';
 import {
@@ -254,14 +255,21 @@ const Cards = styled.ul`
   clickable while the metadata beside it is not is a target people aim at and miss,
   and it costs two focus stops instead of one.
 */
-const Card = styled(Link)`
-  display: block;
-  text-decoration: none;
-  color: inherit;
+/*
+  The card, which is no longer itself a link.
+
+  It was - the whole card was one <Link> - and the status control could not go inside
+  it, because a select nested in an anchor is a control whose every click also
+  navigates. So the shell holds two children: the link, which is still the whole
+  reading surface, and the control, which is its sibling and swallows its own clicks.
+
+  The hover and focus treatment moved up here with the border, so the card still
+  lights up as one thing rather than the title lighting up inside a box that does not.
+*/
+const Card = styled.div`
   border: 1px solid ${palette.border};
   border-radius: ${radius.md};
   background: ${palette.card};
-  padding: 9px 11px;
   transition: border-color 120ms ease, background 120ms ease;
 
   &:hover {
@@ -269,9 +277,63 @@ const Card = styled(Link)`
     background: ${palette.blush};
   }
 
-  &:focus-visible {
+  &:focus-within {
     outline: 2px solid ${palette.hotPink};
     outline-offset: 2px;
+  }
+`;
+
+const CardBody = styled(Link)`
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  padding: 9px 11px 6px;
+
+  &:focus-visible {
+    outline: none;
+  }
+`;
+
+/*
+  Moving a task without opening it.
+
+  A native select rather than drag-and-drop between columns. Dragging is what a board
+  looks like it should do and it is the wrong trade here: it is a large amount of code,
+  it is awkward on a touch screen, and it is unreachable by keyboard without building a
+  parallel set of controls anyway - at which point the parallel set is the feature and
+  the dragging is decoration. A select is one tab stop, works everywhere, and says what
+  the options are without anybody having to try.
+
+  The label is the column it is IN, so the control reads as the task's state rather
+  than as an instruction. Changing it is the move.
+*/
+const MoveRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px 9px;
+`;
+
+const MoveSelect = styled.select`
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: ${palette.inkSoft};
+  background: transparent;
+  border: 1px solid ${palette.border};
+  border-radius: ${radius.sm};
+  padding: 1px 4px;
+  max-width: 100%;
+  cursor: pointer;
+
+  &:hover {
+    color: ${palette.deepMagenta};
+    border-color: ${palette.borderStrong};
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: progress;
   }
 `;
 
@@ -339,6 +401,13 @@ export default function TasksPage() {
   const navigate = useNavigate();
   const identity = useIdentity();
   const [tasks, setTasks] = useState<Task[] | null>(null);
+  /*
+    The task currently being moved, so its select can go quiet rather than accepting a
+    second change while the first is still in flight. One id rather than a set: moving
+    two cards in the same second is not a thing anybody does, and a set would be state
+    to clean up on every path out of the request.
+  */
+  const [moving, setMoving] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [statuses, setStatuses] = useState<StatusInfo[]>([]);
   const [people, setPeople] = useState<Person[]>([]);
@@ -433,6 +502,44 @@ export default function TasksPage() {
         ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
   }, [linkedProject, tasks]);
+
+  /**
+   * Move a task to another status.
+   *
+   * Optimistic, and the card jumps columns before the request lands. A board is judged
+   * on whether dropping something somewhere feels immediate, and a round trip before
+   * the card moves makes every move feel like a form submission.
+   *
+   * A failure puts the row back AND says so. That is the difference from the roadmap's
+   * grouping patch, which fails quietly: a lane that did not regroup is visible on the
+   * screen you are looking at, whereas a card that silently slid back to Backlog while
+   * you were reading another column is a change you believe you made and did not.
+   */
+  const moveTask = useCallback(
+    async (task: Task, status: string) => {
+      if (status === task.status) {
+        return;
+      }
+      setMoving(task.item_id);
+      setError(null);
+      setTasks((current) =>
+        (current ?? []).map((t) => (t.item_id === task.item_id ? { ...t, status } : t))
+      );
+      try {
+        await patchTask(task.item_id, { status: status as Task['status'] });
+      } catch (err) {
+        setTasks((current) =>
+          (current ?? []).map((t) =>
+            t.item_id === task.item_id ? { ...t, status: task.status } : t
+          )
+        );
+        setError(describeError(err));
+      } finally {
+        setMoving(null);
+      }
+    },
+    []
+  );
 
   const toggleGroup = useCallback((key: string) => {
     setOpenGroups((current) => {
@@ -698,7 +805,8 @@ export default function TasksPage() {
                             const row = rows.get(task.item_id);
                             return (
                               <li key={task.item_id}>
-                                <Card to={`/tasks/${encodeURIComponent(task.item_id)}`}>
+                                <Card>
+                                  <CardBody to={`/tasks/${encodeURIComponent(task.item_id)}`}>
                                   {row?.parentTitle ? <Parent>↳ {row.parentTitle}</Parent> : null}
                                   <CardTitle>{task.title}</CardTitle>
                                   <CardMeta>
@@ -718,6 +826,21 @@ export default function TasksPage() {
                                       </span>
                                     ) : null}
                                   </CardMeta>
+                                  </CardBody>
+                                  <MoveRow>
+                                    <MoveSelect
+                                      aria-label={`Move ${task.title}`}
+                                      value={task.status}
+                                      disabled={moving === task.item_id}
+                                      onChange={(e) => void moveTask(task, e.target.value)}
+                                    >
+                                      {statuses.map((entry) => (
+                                        <option key={entry.status} value={entry.status}>
+                                          {entry.label}
+                                        </option>
+                                      ))}
+                                    </MoveSelect>
+                                  </MoveRow>
                                 </Card>
                               </li>
                             );

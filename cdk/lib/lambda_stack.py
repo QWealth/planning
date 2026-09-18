@@ -11,6 +11,7 @@ from aws_cdk import (
     aws_iam as iam,
     aws_lambda as lambda_,
     aws_logs as logs,
+    aws_s3 as s3,
     aws_scheduler as scheduler,
     aws_scheduler_targets as scheduler_targets,
 )
@@ -27,6 +28,7 @@ class LambdaStack(cdk.Stack):
         projects_table: dynamodb.ITable,
         people_table: dynamodb.ITable,
         work_table: dynamodb.ITable,
+        attachments_bucket: s3.IBucket,
         audit_table: dynamodb.ITable,
         user_pool: cognito.IUserPool,
         env_name: str,
@@ -65,6 +67,17 @@ class LambdaStack(cdk.Stack):
         # RFC and task list page on the work table.
         for table in (projects_table, people_table, work_table, audit_table):
             table.grant_read_write_data(lambda_role)
+
+        # The API never reads or writes an object itself - it signs URLs and the browser
+        # does the transfer. But signing is not an API call: a presigned URL carries the
+        # signer's own permissions, so the role must genuinely hold whatever the URL
+        # grants, and a role that could not PUT would mint URLs that 403 on use.
+        #
+        # Read, write and delete, and nothing wider. No ListBucket: nothing enumerates
+        # the bucket, and an API that could would be one bug away from serving somebody
+        # every attachment on the roadmap.
+        attachments_bucket.grant_read_write(lambda_role)
+        attachments_bucket.grant_delete(lambda_role)
 
         # Four Cognito admin verbs, and no more.
         #
@@ -167,6 +180,7 @@ class LambdaStack(cdk.Stack):
                 "PROJECTS_TABLE_NAME": projects_table.table_name,
                 "PEOPLE_TABLE_NAME": people_table.table_name,
                 "WORK_TABLE_NAME": work_table.table_name,
+                "ATTACHMENTS_BUCKET": attachments_bucket.bucket_name,
                 "WORK_BY_KIND_INDEX": "kind-updated-index",
                 "AUDIT_TABLE_NAME": audit_table.table_name,
                 "AUDIT_BY_ENTITY_INDEX": "entity-timestamp-index",

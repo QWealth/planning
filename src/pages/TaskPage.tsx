@@ -35,6 +35,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import styled from 'styled-components';
 
+import TaskAttachments from '../components/TaskAttachments';
 import TaskEditor from '../components/TaskEditor';
 import {
   deleteTask,
@@ -42,6 +43,7 @@ import {
   getRoadmap,
   getTaskStatuses,
   getTasks,
+  patchTask,
 } from '../services/api';
 import { displayHeading, palette, radius } from '../styles/theme';
 import {
@@ -96,6 +98,36 @@ const LaneLink = styled(Link)`
   &:hover > * {
     border-color: ${palette.deepMagenta};
     color: ${palette.deepMagenta};
+  }
+`;
+
+/*
+  The status, as the one control in the header.
+
+  Sized and weighted like the Chip it replaced, so the row of facts still reads as a
+  row of facts rather than as a form that has appeared in the middle of a heading.
+*/
+const StatusSelect = styled.select`
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: ${palette.ink};
+  background: ${palette.card};
+  border: 2px solid ${palette.borderStrong};
+  border-radius: ${radius.pill};
+  padding: 2px 8px;
+  cursor: pointer;
+
+  &:hover {
+    border-color: ${palette.deepMagenta};
+    color: ${palette.deepMagenta};
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: progress;
   }
 `;
 
@@ -205,6 +237,7 @@ export default function TaskPage() {
   const [editing, setEditing] = useState(isNew);
   const [addingSub, setAddingSub] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [busy, setBusy] = useState(false);
 
   /*
@@ -239,6 +272,39 @@ export default function TaskPage() {
   const task = useMemo(
     () => (isNew || !itemId ? null : tasks.find((t) => t.item_id === itemId) ?? null),
     [tasks, itemId, isNew]
+  );
+
+  /**
+   * Move this task to another status, from the header rather than through the editor.
+   *
+   * Optimistic and reverted on failure, the same bargain the board's cards make - and
+   * the error is shown, because a status that quietly slid back is a change you believe
+   * you made and did not. The whole `tasks` list is updated rather than a single
+   * object, because `task` is derived from it.
+   */
+  const moveTask = useCallback(
+    async (status: string) => {
+      if (!task || status === task.status) {
+        return;
+      }
+      const before = task.status;
+      setMoving(true);
+      setError(null);
+      setTasks((current) =>
+        current.map((t) => (t.item_id === task.item_id ? { ...t, status } : t))
+      );
+      try {
+        await patchTask(task.item_id, { status: status as Task['status'] });
+      } catch (err) {
+        setTasks((current) =>
+          current.map((t) => (t.item_id === task.item_id ? { ...t, status: before } : t))
+        );
+        setError(describeError(err));
+      } finally {
+        setMoving(false);
+      }
+    },
+    [task]
   );
 
   const rows = useMemo(() => decorate(tasks, projects, statuses), [tasks, projects, statuses]);
@@ -361,7 +427,28 @@ export default function TaskPage() {
             ) : null}
             <Heading>{task.title}</Heading>
             <Meta>
-              <Chip title={entry?.description}>{entry?.label ?? task.status}</Chip>
+              {/*
+                The status is a control here, not a chip.
+
+                Changing where a task has got to is the single most common edit anybody
+                makes to one, and it was behind Edit - a form with six other fields, a
+                Save button, and the chance to change five things you did not mean to.
+                The same select is on every board card; this is the other place the same
+                move is made.
+              */}
+              <StatusSelect
+                aria-label="Status"
+                title={entry?.description}
+                value={task.status}
+                disabled={moving}
+                onChange={(e) => void moveTask(e.target.value)}
+              >
+                {statuses.map((option) => (
+                  <option key={option.status} value={option.status} title={option.description}>
+                    {option.label}
+                  </option>
+                ))}
+              </StatusSelect>
               {/* A link, not a chip. This page tells you a task belongs to Qfeed and
                   then leaves you to go and find Qfeed, which is a tab, a scroll and a
                   chevron away - and the dates that explain why this task matters are
@@ -423,6 +510,18 @@ export default function TaskPage() {
         ) : null}
 
         {task.body ? <Notes>{task.body}</Notes> : null}
+      </Panel>
+
+      {/* Files, in their own panel between the task and its subtasks.
+
+          Below the notes because an attachment is usually evidence for something the
+          notes say, and above the subtasks because it belongs to THIS task - a panel
+          after the children would read as belonging to the last of them. */}
+      <Panel>
+        <Head>
+          <SubHead>Attachments</SubHead>
+        </Head>
+        <TaskAttachments itemId={task.item_id} />
       </Panel>
 
       {/* Subtasks are offered only on a ticket. A subtask cannot have children - the

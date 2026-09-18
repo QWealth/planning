@@ -39,6 +39,8 @@ from botocore.exceptions import ClientError
 
 from app import config
 from app.db.models import (
+    ATTACHMENT_SK_PREFIX,
+    AttachmentModel,
     COMMENT_SK_PREFIX,
     WORK_SK,
     CommentModel,
@@ -743,3 +745,124 @@ def detach_phase_tasks(project_id: str, phase_id: str) -> list[str]:
             continue
         touched.append(task["item_id"])
     return touched
+
+
+# ------------------------------------------------------- attachments on a work item
+#
+# Child rows, exactly like comments, and read the same way - see _comment_rows for why
+# the Query is on a key prefix rather than a filter. The FILE is in S3; these rows are
+# the only record that it exists.
+
+
+def _attachment_rows(item_id: str) -> list[dict[str, Any]]:
+    """Every attachment row for one item, oldest first, straight from the table."""
+    try:
+        response = get_work_table().query(
+            KeyConditionExpression=Key("item_id").eq(item_id)
+            & Key("sk").begins_with(ATTACHMENT_SK_PREFIX)
+        )
+    except ClientError as e:
+        logger.error("Error listing attachments for %s: %s", item_id, e)
+        raise
+    return response.get("Items", [])
+
+
+def list_attachments(item_id: str, include_pending: bool = False) -> list[dict[str, Any]]:
+    """
+    An item's attachments, oldest first.
+
+    Pending rows are hidden by default, and that default is the feature. A row exists
+    from the moment an upload URL is signed, so anything the browser started and did not
+    finish would otherwise show as an attachment that cannot be downloaded - a broken
+    link where there should be nothing at all.
+
+    `include_pending` exists for the route that marks one complete, which has to be able
+    to find a row it is about to flip.
+    """
+    rows = [AttachmentModel.from_item(item) for item in _attachment_rows(item_id)]
+    return rows if include_pending else [row for row in rows if row["uploaded"]]
+
+
+def get_attachment(item_id: str, attachment_id: str) -> Optional[dict[str, Any]]:
+    """One attachment row, pending or not. None when there is no such row."""
+    for row in list_attachments(item_id, include_pending=True):
+        if row["attachment_id"] == attachment_id:
+            return row
+    return None
+
+
+def create_attachment(
+    item_id: str,
+    filename: str,
+    content_type: str,
+    size: int,
+    storage_key: str,
+    uploaded_by: str,
+) -> dict[str, Any]:
+    """Record an attachment that is about to be uploaded. See AttachmentModel."""
+    item = AttachmentModel.create_item(
+        item_id=item_id,
+        attachment_id=_new_id("att"),
+        filename=filename,
+        content_type=content_type,
+        size=size,
+        storage_key=storage_key,
+        uploaded_by=uploaded_by,
+    )
+    try:
+        get_work_table().put_item(Item=item)
+    except ClientError as e:
+        logger.error("Error recording attachment on %s: %s", item_id, e)
+        raise
+    return AttachmentModel.from_item(item)
+
+
+def mark_attachment_uploaded(item_id: str, attachment_id: str) -> Optional[dict[str, Any]]:
+    """
+    Flip a pending row to uploaded, which is what makes it visible.
+
+    Returns None for an id that names nothing, rather than raising: the caller turns
+    that into a 404, and "the row is gone" and "the row was never there" are the same
+    answer to somebody who just tried to finish an upload.
+    """
+    row = get_attachment(item_id, attachment_id)
+    if row is None:
+        return None
+    try:
+        get_work_table().update_item(
+            Key={"item_id": item_id, "sk": AttachmentModel.sort_key(
+                row["created_at"], attachment_id
+            )},
+            UpdateExpression="SET #u = :true",
+            ExpressionAttributeNames={"#u": "uploaded"},
+            ExpressionAttributeValues={":true": True},
+        )
+    except ClientError as e:
+        logger.error("Error completing attachment %s: %s", attachment_id, e)
+        raise
+    return {**row, "uploaded": True}
+
+
+def delete_attachment(item_id: str, attachment_id: str) -> Optional[dict[str, Any]]:
+    """
+    Remove the metadata row and return it, so the caller can delete the object too.
+
+    The ROW goes first and the object second, which is the opposite of the create order
+    and right for the same reason: the state to avoid is a row pointing at nothing,
+    because that is the one a reader sees. An object with no row is invisible and
+    reclaimed by the bucket's own lifecycle if anybody ever adds one; a row with no
+    object is a download that 404s.
+    """
+    row = get_attachment(item_id, attachment_id)
+    if row is None:
+        return None
+    try:
+        get_work_table().delete_item(
+            Key={"item_id": item_id, "sk": AttachmentModel.sort_key(
+                row["created_at"], attachment_id
+            )}
+        )
+    except ClientError as e:
+        logger.error("Error deleting attachment %s: %s", attachment_id, e)
+        raise
+    return row

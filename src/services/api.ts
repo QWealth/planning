@@ -15,6 +15,8 @@ import type {
   Features,
   Identity,
   InviteResult,
+  Attachment,
+  AttachmentStarted,
   Milestone,
   MilestoneCheck,
   MilestoneCreate,
@@ -751,4 +753,80 @@ export default apiClient;
 export async function getMilestoneLog(): Promise<MilestoneCheck[]> {
   const response = await apiClient.get<MilestoneCheck[]>('/milestone-log');
   return response.data;
+}
+
+/* ------------------------------------------------------------ attachments */
+
+/** What is attached to a task. Empty when the deployment has no bucket configured. */
+export async function getAttachments(itemId: string): Promise<Attachment[]> {
+  const response = await apiClient.get<Attachment[]>(
+    `/tasks/${encodeURIComponent(itemId)}/attachments`
+  );
+  return response.data;
+}
+
+/**
+ * Upload a file to a task, in the three steps the API requires.
+ *
+ * The middle one does NOT go through our API - it is a direct POST to S3 with the
+ * signature the first step handed back. That is the whole reason attachments are not
+ * capped at API Gateway's 6MB; see fast/app/storage.py.
+ *
+ * `fetch` rather than the axios client for that middle step, deliberately: apiClient
+ * attaches our Authorization header to every request, and sending a Cognito token to
+ * Amazon's servers would be leaking a credential to a third party for no reason. The
+ * presigned fields are the only authorisation S3 wants.
+ */
+export async function uploadAttachment(itemId: string, file: File): Promise<Attachment> {
+  const started = await apiClient.post<AttachmentStarted>(
+    `/tasks/${encodeURIComponent(itemId)}/attachments`,
+    {
+      filename: file.name,
+      content_type: file.type || 'application/octet-stream',
+      size: file.size,
+    }
+  );
+  const { attachment, upload_url: url, fields } = started.data;
+
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    form.append(key, value);
+  }
+  // Last, and that is required rather than tidy: S3 ignores everything in the form
+  // after the file part, so a field appended afterwards is silently dropped.
+  form.append('file', file);
+
+  const sent = await fetch(url, { method: 'POST', body: form });
+  if (!sent.ok) {
+    // S3 answers in XML and the useful part is the code. Surfaced rather than
+    // flattened, because EntityTooLarge and AccessDenied need different responses from
+    // whoever is reading it.
+    throw new Error(`The upload was refused (${sent.status}). The file was not saved.`);
+  }
+
+  const done = await apiClient.post<Attachment>(
+    `/tasks/${encodeURIComponent(itemId)}/attachments/${encodeURIComponent(
+      attachment.attachment_id
+    )}/done`
+  );
+  return done.data;
+}
+
+/** A link to one file, good for a few minutes. Minted on the click. */
+export async function getAttachmentDownload(
+  itemId: string,
+  attachmentId: string
+): Promise<string> {
+  const response = await apiClient.get<{ url: string }>(
+    `/tasks/${encodeURIComponent(itemId)}/attachments/${encodeURIComponent(
+      attachmentId
+    )}/download`
+  );
+  return response.data.url;
+}
+
+export async function deleteAttachment(itemId: string, attachmentId: string): Promise<void> {
+  await apiClient.delete(
+    `/tasks/${encodeURIComponent(itemId)}/attachments/${encodeURIComponent(attachmentId)}`
+  );
 }

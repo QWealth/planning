@@ -21,7 +21,7 @@ easy to get wrong in ways that look fine:
     mute.
 """
 
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -36,7 +36,14 @@ WEDNESDAY = date(2026, 9, 9)
 # stamped at creation, so a pinned "today" in the past makes every proposal look as
 # though it opens in the future and nothing is ever chased. That is not a hypothetical
 # - it is what the first run of this file did.
-TODAY = date.today()
+#
+# And it has to be the UTC clock specifically, which is the second version of the same
+# bug. `review_since` is `datetime.utcnow()`, so between 20:00 and midnight in Toronto
+# the UTC date is already tomorrow while date.today() still says today - and every RFC
+# looks as though it opens in the future again, for four hours a day. In Lambda the two
+# agree because the runtime is UTC, so this only ever fails on somebody's machine, in
+# the evening, on a test that passed all afternoon.
+TODAY = datetime.utcnow().date()
 REVIEW = RfcStatus.REVIEW.value
 
 
